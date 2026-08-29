@@ -1,0 +1,819 @@
+# LACUNA -- per-target capability record.
+#
+# GENERATED AS SPEC DATA, NOT AS A REPORT. Every field here is either copied from
+# evaluation/spec/_design/target_surveys.json and the structure catalog, or derived
+# mechanically from the shipped corpus (data/targets.csv and
+# the published candidates table). Nothing here is measured by the phase that wrote it.
+#
+# Companion files: STRUCTURE_MANIFEST.yaml (what to build), LACUNA_STRUCTURES.md (why),
+# README.md (how a port is checked). Validate with evaluation/scripts/check_manifest.py.
+#
+# YAML SUBSET. Block mappings, block sequences, and scalars that are one of
+# true / false / null / a number / a double-quoted single-line string. No anchors,
+# no flow collections except [] and {} for empties, no multi-line scalars.
+# check_manifest.py parses exactly this subset with the standard library and raises
+# on anything outside it, so there is no second serialisation to keep in sync.
+capabilities_version: 1
+spec_revision: "2026-08-28"
+what_this_is: "The machine-readable per-target capability record required by shared_infrastructure item 7 of evaluation/spec/_design/the structure catalog. A blocked (structure, target) cell in STRUCTURE_MANIFEST.yaml is a JOIN against this file, not prose in a README."
+flag_names:
+  - "nth_supported"
+  - "mem_read_hookable"
+  - "address_hookable"
+  - "timestamp_hookable"
+  - "init_value_hookable"
+  - "final_value_hookable"
+  - "next_pc_hookable"
+  - "hint_hookable"
+  - "x0_hookable"
+flag_values:
+  - true
+  - false
+  - "partial"
+  - "not_determined"
+flag_value_meanings:
+  value_true: "usable today by a port with no vendor-tree change beyond arming it"
+  value_false: "not reachable today; the note says whether that is a missing hook (fixable) or a structural absence (a publishable negative)"
+  value_partial: "reachable in a restricted form only; the note states the restriction"
+  value_not_determined: "nobody has established it either way. NOT a synonym for false -- do not report it as a negative result"
+site_key: "(pc, nth, mu) on all seven targets. `nth` does NOT mean the same thing everywhere: see nth_supported. Where nth_supported is false the only legal arming is nth=-1 (mutate every execution of the pc) and the CSV must say so."
+targets:
+  - target: "pico"
+    repository: "https://github.com/brevis-network/pico"
+    revision: "22b0aae6321c1f63c72aafd0b506b5f45b91ffb1"
+    release: "v2.0.0"
+    guest_isa: "RV64IM"
+    guest_word_width: 64
+    proof_framework: "Plonky3 STARK (AIR + LogUp)"
+    proof_configuration: "RiscvMachine::all_chips() (46 chips), all lookups enabled, single chunk"
+    measured_wall_seconds_per_candidate: 0.5
+    measured_wall_source: "the structure catalog honest_limits, 'Measured aggregate wall per candidate'. Aggregate over the shipped run on the hardware named in data/targets.csv; not a re-measurement by this phase."
+    seed_builder_symbol: "guest file guests/lacuna_seeds/src/bin/<id>.rs"
+    seed_builder_note: "No in-Rust instruction emitter. Every seed is a real compiled RV64IM guest ELF on disk, selected by env LACUNA_ELF and compiled with Compiler::new(SourceType::RISCV, &elf).compile() (vm/src/chips/chips/alu/lt/lacuna_eval.rs:58-74). A new structure = a new .rs guest + one row in the SEEDS table of evaluation/scripts/run_lacuna_pico.py."
+    operand_source_today: "input"
+    operand_source_required: "input"
+    operand_source_note: "stdin. LACUNA_STDIN is a comma-separated u64 list parsed at lacuna_eval.rs:76-93; each value is bincode-serialised as its own EmulatorStdin element and pulled with read_as::<u64>(). Nothing is baked as an immediate."
+    public_output:
+      out_of_circuit:
+        name: "pv_stream"
+        what: "The FD_PUBLIC_VALUES=3 byte stream. Guest commit_bytes -> WRITE ecall -> rt.state.public_values_stream (vm/src/emulator/riscv/syscalls/write.rs:61), lifted at instances/machine/riscv.rs:167 and carried on MetaProof (machine/proof.rs:31)."
+        csv_columns: "honest_output / mutated_output / output_changed"
+      in_circuit:
+        name: "committed_value_digest"
+        what: "PublicValues::committed_value_digest. The guest SHA-256s every byte sent to fd 3 (sdk/sdk/src/riscv_ecalls/io.rs:33) and issues 8 COMMIT ecalls at halt (halt.rs:51-63); the AIR binds each word at chips/riscv_cpu/ecall/constraints.rs:148-231 and the verifier chains it across chunks at instances/machine/riscv.rs:607-623."
+        csv_columns: "honest_committed_digest / mutated_committed_digest / digest_changed"
+      strict_predicate_reads: "out_of_circuit"
+      divergence_observed: "YES, and this is the corpus that proves the two objects diverge: 682 Whole-program candidates were verifier-ACCEPTED with digest_changed=true and output_changed=false, and scored accepted_case=false."
+    mu_menu_variants_implemented:
+      - "bind_o1_swap"
+      - "boundary_max"
+      - "boundary_msb"
+      - "minus_B0"
+      - "minus_B1"
+      - "neg_control_no_swap"
+      - "plus_B0"
+      - "plus_B1"
+      - "plus_B2"
+      - "plus_B3"
+      - "xor_b0"
+      - "xor_b31"
+      - "zero"
+    known_unbound_opcodes:
+      - "SRLW"
+      - "SRAW"
+      - "SRLIW"
+    known_unbound_opcodes_note: "ESTABLISHED. pico catalog #3, SRLW/SRAW low word unconstrained (sr/constraints.rs, 'TODO: constrain 32-bit operations'); e2e gold e2e_srlw_forge_accepted; all 24 encoding accepted cases sit here."
+    opcodes_exercised_in_published_run:
+      - "ADD"
+      - "ADDW"
+      - "AND"
+      - "AUIPC"
+      - "DIV"
+      - "DIVU"
+      - "JALR"
+      - "LB"
+      - "LBU"
+      - "LD"
+      - "LHU"
+      - "LW"
+      - "LWU"
+      - "MUL"
+      - "MULH"
+      - "MULHU"
+      - "MULW"
+      - "OR"
+      - "REM"
+      - "REMU"
+      - "SLL"
+      - "SLLW"
+      - "SLT"
+      - "SLTU"
+      - "SRA"
+      - "SRAW"
+      - "SRL"
+      - "SRLW"
+      - "SUB"
+      - "SUBW"
+      - "XOR"
+    frozen_seed_ids:
+      - "fib"
+      - "op_add"
+      - "op_addi"
+      - "op_addw"
+      - "op_and"
+      - "op_div"
+      - "op_divu"
+      - "op_mul"
+      - "op_mulh"
+      - "op_mulhu"
+      - "op_mulw"
+      - "op_or"
+      - "op_rem"
+      - "op_remu"
+      - "op_sll"
+      - "op_slli"
+      - "op_sllw"
+      - "op_slt"
+      - "op_sltu"
+      - "op_sra"
+      - "op_sraw"
+      - "op_srl"
+      - "op_srli"
+      - "op_srliw"
+      - "op_srlw"
+      - "op_sub"
+      - "op_subw"
+      - "op_xor"
+      - "st_control_flow"
+      - "st_hazard_chain"
+      - "st_initial_state"
+      - "st_redirect"
+      - "st_store_load"
+      - "st_store_load_tail"
+    capability:
+      nth_supported:
+        value: true
+        note: "Full per-execution granularity. wb_perturb::begin(pc) is called at the head of emulate_instruction (emulator/instruction.rs:48) and the occurrence counter is per static pc. pico and risc0 are the only two targets where nth>=0 works today."
+      mem_read_hookable:
+        value: "partial"
+        note: "Doubleword loads only, and only as a STALE-VALUE operator: stale_load::on_load(pc, align_u64(addr), v) at emulator/instruction.rs:334 in the Opcode::LD arm returns the second-most-recent value written to that address. Sub-word load delivery (LB/LBU/LH/LHU/LW/LWU) is not hooked, and there is no free-value substitution on the read side."
+      address_hookable:
+        value: false
+        note: "A bug-specific seam exists but is not wired into lacuna_eval: n1_forge at emulator/mod.rs:243-296. The addr_aligned / addr_word fields come from one source, so an address forgery is expressible in ENCODING mode only, by perturbing the write-back that materialises the pointer."
+      timestamp_hookable:
+        value: "partial"
+        note: "Not a record field. Timestamps are reachable only post-trace-generation through forge_hook::apply (instances/machine/riscv.rs:232, module at :700-750), which BIND-O1 uses to rewrite clk / prev_clk / prev_chunk / compare_clk / diff_16bit_limb / diff_8bit_limb. KoalaBear-only (assert at riscv.rs:737-741)."
+      init_value_hookable:
+        value: false
+        note: "No hook on the MemoryInitialize event value or on the program image. This is what makes st_initial_state hard on pico: the shipped st_initial_state seed is inert and its binding accepts are incidental stack-slot fires."
+      final_value_hookable:
+        value: false
+        note: "No hook on the memory-finalize event value; and nothing about final state is public on pico, so it would not be observable even if hooked."
+      next_pc_hookable:
+        value: true
+        note: "IMPLEMENTED BUT NEVER USED BY LACUNA. wb_perturb::next_pc (emulator/mod.rs:134-142) is called at emulator/instruction.rs:954 and armed by wb_perturb::with_pc (mod.rs:113-132); only lt/tests.rs:3618 exercises it."
+      hint_hookable:
+        value: "partial"
+        note: "pico has no separate hint channel in these seeds: stdin IS the operand channel (EmulatorStdin, read_as::<u64>). Every operand-setup write-back is therefore already sitting on the hint hazard; st_hint_advice names it rather than adding a channel."
+      x0_hookable:
+        value: false
+        note: "The choke point explicitly skips X0 (emulator/mod.rs:1982-1986) and rw zeroes writes to it (:1979). One-line relaxation, not a VM property."
+  - target: "sp1"
+    repository: "https://github.com/succinctlabs/sp1"
+    revision: "51f6efcb2971540d2ce1f48b35fd8bcf848a8b9f"
+    release: "(zkvm-fuzz-work branch)"
+    guest_isa: "RV32IM/RV64"
+    guest_word_width: 32
+    proof_framework: "Plonky3 STARK / hypercube"
+    proof_configuration: "SimpleProver over CpuShardProver, RiscvAir::machine() (122 chips), core_fri_config, LOG_STACKING_HEIGHT 21 / MAX_LOG_ROW_COUNT 22; production SP1Verifier::verify. Core proofs only, no recursion"
+    measured_wall_seconds_per_candidate: 6.9
+    measured_wall_source: "the structure catalog honest_limits, 'Measured aggregate wall per candidate'. Aggregate over the shipped run on the hardware named in data/targets.csv; not a re-measurement by this phase."
+    seed_builder_symbol: "fn build_<id>_program() -> Program"
+    seed_builder_note: "In-memory sp1_core_executor::Program from a Vec<Instruction>; existing builders at crates/prover/src/lacuna_eval.rs:93 (build_op_program) and :132 (build_op_mem_program). Add a row to the structure/builder table at :596-598. All branch/jump/load/store opcodes exist and execute."
+    operand_source_today: "immediate"
+    operand_source_required: "input"
+    operand_source_note: "TODAY IMMEDIATE: let (b,c) = (0x5A5u64, 13u64) at crates/prover/src/lacuna_eval.rs:584, materialised by two ADDI. SP1Stdin is passed empty at :636,:665,:696,:737. REQUIRED: wire SP1Stdin through minimal_executor.with_input (utils/prove.rs:55-57). Until then every sp1 comparison against pico/zisk is operand-in-vk and must be labelled so."
+    public_output:
+      out_of_circuit:
+        name: "none_captured"
+        what: "The sp1 seeds have no byte transport: the seed writes digest words directly through the COMMIT ecall (t0=0x10, a0=word index, a1=value). There is nothing out-of-circuit to record."
+        csv_columns: "NA"
+      in_circuit:
+        name: "committed_value_digest"
+        what: "PublicValues::committed_value_digest, 8 words. Executor: crates/core/executor/src/vm/syscall/commit.rs:9-17. AIR: SyscallInstrsChip::eval_commit, crates/core/machine/src/syscall/instructions/air.rs:277-376, load-bearing assertion at :364-367 against local.adapter.c() (register x11). Verifier chains it across shards at crates/prover/src/verify.rs:453-462 and requires commit_syscall==1 at :481-485."
+        csv_columns: "honest_output / mutated_output / output_changed (sp1's pv_hex IS the in-circuit digest)"
+      strict_predicate_reads: "in_circuit"
+      divergence_observed: "Not applicable -- only one object exists on this target."
+    mu_menu_variants_implemented:
+      - "boundary_max"
+      - "boundary_msb"
+      - "minus_B0"
+      - "minus_B1"
+      - "minus_B2"
+      - "plus_B0"
+      - "plus_B1"
+      - "plus_B2"
+      - "xor_b0"
+      - "xor_b15"
+      - "xor_b31"
+      - "xor_b63"
+      - "zero"
+    known_unbound_opcodes: []
+    known_unbound_opcodes_note: "NOT DETERMINED. No opcode is known unbound on sp1 at the record layer. Use the substitution rule."
+    opcodes_exercised_in_published_run:
+      - "ADD"
+      - "ADDW"
+      - "AND"
+      - "DIV"
+      - "DIVU"
+      - "DIVUW"
+      - "DIVW"
+      - "MUL"
+      - "MULH"
+      - "MULHSU"
+      - "MULHU"
+      - "MULW"
+      - "OR"
+      - "REM"
+      - "REMU"
+      - "REMUW"
+      - "REMW"
+      - "SLL"
+      - "SLLW"
+      - "SLT"
+      - "SLTU"
+      - "SRA"
+      - "SRAW"
+      - "SRL"
+      - "SRLW"
+      - "SUB"
+      - "SUBW"
+      - "XOR"
+    frozen_seed_ids:
+      - "op_add"
+      - "op_add_mem"
+      - "op_addw"
+      - "op_and"
+      - "op_div"
+      - "op_divu"
+      - "op_divuw"
+      - "op_divw"
+      - "op_mul"
+      - "op_mulh"
+      - "op_mulhsu"
+      - "op_mulhu"
+      - "op_mulw"
+      - "op_or"
+      - "op_rem"
+      - "op_remu"
+      - "op_remuw"
+      - "op_remw"
+      - "op_sll"
+      - "op_sllw"
+      - "op_slt"
+      - "op_sltu"
+      - "op_sra"
+      - "op_sraw"
+      - "op_srl"
+      - "op_srlw"
+      - "op_sub"
+      - "op_subw"
+      - "op_xor"
+    capability:
+      nth_supported:
+        value: false
+        note: "nth=-1 only. One global SEEN counter (crates/core/executor/src/vm.rs:70) is shared across the two CoreVM passes and is not reset at CoreVM construction, so a per-execution index does not mean the same thing in both passes."
+      mem_read_hookable:
+        value: false
+        note: "CoreVM::mr (vm.rs:745-758 supervisor, :948 user) is not hooked, and the phase-2 CoreVM has no memory at all: every memory read value comes from a phase-1 oracle that IGNORES its address argument. Any RAM-mediated forgery on sp1 is structurally self-inconsistent until a read-side hook lands."
+      address_hookable:
+        value: false
+        note: "sp1 has no address record field -- the effective address is recomputed in execute_load / execute_store from the register, so it is reachable only indirectly by perturbing the address register. A clean structural negative."
+      timestamp_hookable:
+        value: false
+        note: "All timestamps are derived from self.clk inside rr/rw; MemoryRecord.timestamp is not independently settable."
+      init_value_hookable:
+        value: true
+        note: "record_perturb::F_MEM_INIT_VALUE = 0, declared at crates/prover/src/utils/prove.rs:150, applied at :243-266 over global_memory_initialize_events[k].value. The only record_perturb field the shipped enumeration uses."
+      final_value_hookable:
+        value: true
+        note: "record_perturb::F_MEM_FINAL_VALUE = 1, declared at prove.rs:152. IMPLEMENTED AND NEVER ARMED by the enumeration -- a free structure axis today."
+      next_pc_hookable:
+        value: false
+        note: "Branch outcome and next_pc are not hookable; BranchEvent.next_pc is recomputed."
+      hint_hookable:
+        value: "partial"
+        note: "SP1Stdin is constructed empty at every call site (crates/prover/src/lacuna_eval.rs:636,665,696,737 via minimal_executor.with_input, prove.rs:55-57), so no hint reaches the guest today. Hint pages are initialised through the very MemoryInitialize chip whose value column is unconstrained for addr != 0 (prove.rs:159-167), so wiring stdin makes the init hook double as the hint hook."
+      x0_hookable:
+        value: true
+        note: "Expressible today: Instruction::new(op, 0, 28, 29, false, false). sp1 dedicates FOUR chips to the dark write -- AluX0, AluX0User, LoadX0, LoadX0User (crates/core/machine/src/riscv/mod.rs:141-143, :168-171, instantiated at :488-489, :498-499) -- and no sp1 candidate has ever produced a row in any of them."
+  - target: "ceno"
+    repository: "https://github.com/scroll-tech/ceno"
+    revision: "13c5abf36a7f9aa02d9ea5f2eb5a0719ebf17f8b"
+    release: "(master, no tag)"
+    guest_isa: "RV32IM"
+    guest_word_width: 32
+    proof_framework: "GKR / sumcheck over committed WitIns"
+    proof_configuration: "ZKVMProver / ZKVMVerifier (GKR + Basefold, BabyBearExt4), u16limb_circuit; full RV32IM registered at rv32im.rs:280-423"
+    measured_wall_seconds_per_candidate: 2.8
+    measured_wall_source: "the structure catalog honest_limits, 'Measured aggregate wall per candidate'. Aggregate over the shipped run on the hardware named in data/targets.csv; not a re-measurement by this phase."
+    seed_builder_symbol: "fn build_<id>_program(...) -> Program"
+    seed_builder_note: "ceno_emul::Program from PRE-DECODED Instruction structs (ceno_emul/src/rv32im.rs:117-128) built with encode_rv32 / encode_rv32u; existing builder at ceno_zkvm/src/lacuna_eval.rs:84-108. Program.image length MUST be a power of two >= 2 (init_static_addrs asserts, e2e.rs:1257-1261). Keygen is outside the candidate loop, so a new structure costs one keygen."
+    operand_source_today: "immediate"
+    operand_source_required: "input"
+    operand_source_note: "TODAY IMMEDIATE: operands are ADDI/LUI immediates inside build_op_program (ceno_zkvm/src/lacuna_eval.rs:84-108), i.e. inside Program.image, i.e. inside the vk. REQUIRED: a hint-region read wired into the Program image next to lacuna_eval.rs:84."
+    public_output:
+      out_of_circuit:
+        name: "digest_words_peeked"
+        what: "The 8 words at DIGEST_PTR = 0x0800_1000 read straight out of guest memory in the driver prepass (ceno_zkvm/src/lacuna_eval.rs:312, vm.peek_memory)."
+        csv_columns: "honest_output / mutated_output / output_changed"
+      in_circuit:
+        name: "public_io_digest"
+        what: "PublicValues::public_io_digest, 8 u32 exposed as 16 u16 Instances (scheme.rs:100,104-135,186-196). PubIoCommitInstruction forces each public word equal to the guest memory word at the ecall cycle (precompiles/pubio_commit.rs:22-36, WriteMEM at :87-100)."
+        csv_columns: "honest_committed_digest / mutated_committed_digest / digest_changed"
+      strict_predicate_reads: "out_of_circuit"
+      divergence_observed: "Not observed. The AIR forces the two equal at the ecall cycle, so a divergence would itself be a finding."
+    mu_menu_variants_implemented:
+      - "boundary_max"
+      - "boundary_msb"
+      - "mem_prev_minus1"
+      - "mem_prev_minus4"
+      - "mem_prev_plus1"
+      - "mem_prev_plus4"
+      - "mem_prev_set8"
+      - "mem_prev_zero"
+      - "minus_B0"
+      - "minus_B1"
+      - "plus_B0"
+      - "plus_B1"
+      - "plus_B1_hi"
+      - "rd_prev_minus1"
+      - "rd_prev_minus4"
+      - "rd_prev_plus1"
+      - "rd_prev_plus4"
+      - "rd_prev_set8"
+      - "rd_prev_zero"
+      - "rs1_prev_minus1"
+      - "rs1_prev_minus4"
+      - "rs1_prev_plus1"
+      - "rs1_prev_plus4"
+      - "rs1_prev_set8"
+      - "rs1_prev_zero"
+      - "rs2_prev_minus1"
+      - "rs2_prev_minus4"
+      - "rs2_prev_plus1"
+      - "rs2_prev_plus4"
+      - "rs2_prev_set8"
+      - "rs2_prev_zero"
+      - "xor_b0"
+      - "xor_b15"
+      - "xor_b31"
+      - "zero"
+    known_unbound_opcodes: []
+    known_unbound_opcodes_note: "NOT DETERMINED at the record layer. ceno's catalogued MUL/DIV findings (#8/#9/#10) are graded L2/L3 -- the alternative limb decomposition is not expressible as any u32 a record can hold -- so they are outside the method, not an unbound-opcode probe."
+    opcodes_exercised_in_published_run:
+      - "ADD"
+      - "AND"
+      - "DIV"
+      - "DIVU"
+      - "MUL"
+      - "MULH"
+      - "MULHSU"
+      - "MULHU"
+      - "OR"
+      - "REM"
+      - "REMU"
+      - "SLL"
+      - "SLT"
+      - "SLTU"
+      - "SRA"
+      - "SRL"
+      - "SUB"
+      - "XOR"
+    frozen_seed_ids:
+      - "op_add"
+      - "op_and"
+      - "op_div"
+      - "op_divu"
+      - "op_mul"
+      - "op_mulh"
+      - "op_mulhsu"
+      - "op_mulhu"
+      - "op_or"
+      - "op_rem"
+      - "op_remu"
+      - "op_sll"
+      - "op_slt"
+      - "op_sltu"
+      - "op_sra"
+      - "op_srl"
+      - "op_sub"
+      - "op_xor"
+    capability:
+      nth_supported:
+        value: false
+        note: "nth=-1 only. Three emulation passes per candidate (driver prepass, shard planning, witness replay) share one global occurrence counter."
+      mem_read_hookable:
+        value: false
+        note: "StepRecord.memory_op.value exists (ceno_emul/src/tracer.rs:27-47) but vm_state.rs:401-408 store_memory / load_memory carry no hook. The ~20-line stale-load hook is the single highest-value line-of-code investment in the catalog, because prev_cycle IS already a record field here."
+      address_hookable:
+        value: false
+        note: "MemAddr is built from rs1+imm inside the circuit; no record correspondent to perturb directly."
+      timestamp_hookable:
+        value: true
+        note: "THE ONLY TARGET WITH A FIRST-CLASS RECORD TIMESTAMP HOOK. ts_perturb::on_prev_cycle at ceno_emul/src/tracer.rs:1131 moves StepRecord.{rs1,rs2,rd,memory_op}.previous_cycle; arming key is (pc, subcycle in {0=rs1,1=rs2,2=rd,3=mem}). Fires under FullTracer only (not PreflightTracer, tracer.rs:1440), so the shard plan stays honest. This is the ENC-I4 template."
+      init_value_hookable:
+        value: false
+        note: "NOT A RECORD FIELD AT ALL. Program.image -> init_static_addrs (e2e.rs:1248-1265) -> generate_fixed_traces (e2e.rs:1301-1320, mmu.rs:79-83) puts the static memory-init value in the FIXED trace, hence in the vk. RAM-init columns are fixed preprocessed columns (tables/ram/ram_impl.rs:69-76)."
+      final_value_hookable:
+        value: false
+        note: "Final RAM is built from vm.peek_memory, not record-carried, and is not a public output; shard_rw_sum is bus bookkeeping."
+      next_pc_hookable:
+        value: false
+        note: "StepRecord.pc (Change<ByteAddr>) is present in the record but carries no hook. Note that next_pc is a committed WitIn only for BRANCHING circuits (StateInOut::construct_circuit(branching=true), insn_base.rs:42-44), so a straight-line seed has no next_pc column at all."
+      hint_hookable:
+        value: false
+        note: "ceno has a HintsTable and a hint memory region, but neither is wired into the driver's Program image and SyscallWitness.mem_ops/reg_ops are unreachable from both hooks."
+      x0_hookable:
+        value: true
+        note: "encode_rv32 with rd=0 works today; ceno also has an explicit ecall RD_NULL dark write path (vm_state.rs:213) that the write-back hook already covers."
+  - target: "nexus"
+    repository: "https://github.com/nexus-xyz/nexus-zkvm"
+    revision: "f2ad12652c39dc516a116447a53f8557f64a7f7d"
+    release: "v0.3.6"
+    guest_isa: "RV32IM"
+    guest_word_width: 32
+    proof_framework: "Stwo AIR + LogUp"
+    proof_configuration: "prover2 machine, BASE_COMPONENTS (55 components, prover2/machine/src/lib.rs:9); NO M-extension component, so the M-extension is out of scope for this prover"
+    measured_wall_seconds_per_candidate: 0.07
+    measured_wall_source: "the structure catalog honest_limits, 'Measured aggregate wall per candidate'. Aggregate over the shipped run on the hardware named in data/targets.csv; not a re-measurement by this phase."
+    seed_builder_symbol: "fn build_<id>_elf() -> ElfFile"
+    seed_builder_note: "raw Vec<u32> of RISC-V words into ElfFile::new(...); existing builder at prover2/machine/src/lacuna_eval.rs:300-326 with helpers enc (:274) and wou (:280). entry = base = ELF_TEXT_START = 0x88; ram_image needs one zero word after the text or LinearMemoryLayout::validate rejects it (vm/src/emulator/layout.rs:161-165)."
+    operand_source_today: "immediate"
+    operand_source_required: "input"
+    operand_source_note: "TODAY IMMEDIATE and additionally RANGE-LIMITED: (a,b) = (0xA5B, 13) at prover2/machine/src/lacuna_eval.rs:528 emitted as ADDI; encode_i_type masks op_c to 12 bits (common/src/riscv/encoder.rs:41), so operands are confined to [-2048, 2047] and 0xA5B sign-extends to -1445. REQUIRED: pass a private/public input slice to k_trace, which already accepts them."
+    public_output:
+      out_of_circuit:
+        name: "public_output_region"
+        what: "View::view_public_output() (vm/src/emulator/utils.rs:290-293), read by the driver at prover2/machine/src/lacuna_eval.rs:453 / :611."
+        csv_columns: "honest_output / mutated_output / output_changed"
+      in_circuit:
+        name: "pub_memory_boundary_columns"
+        what: "The same bytes written into the PREPROCESSED PubIoAddr / PubOutFlag / PubOutVal columns by PubMemoryBoundary::generate_preprocessed_trace (components/read_write_memory_boundary/pub_input_output_memory/mod.rs:149-155); the verifier RE-DERIVES the preprocessed tree from the View it is handed and compares Merkle roots (verify.rs:103-143, root comparison at :135-139)."
+        csv_columns: "honest_committed_digest / mutated_committed_digest / digest_changed"
+      strict_predicate_reads: "out_of_circuit"
+      divergence_observed: "Not observed; the preprocessed-root comparison ties the two together."
+    mu_menu_variants_implemented:
+      - "boundary_max"
+      - "boundary_msb"
+      - "minus_B0"
+      - "minus_B1"
+      - "plus_B0"
+      - "plus_B1"
+      - "plus_B1_hi"
+      - "xor_b0"
+      - "xor_b15"
+      - "xor_b31"
+      - "zero"
+    known_unbound_opcodes: []
+    known_unbound_opcodes_note: "NOT DETERMINED. The catalogued nexus M-extension findings (#11,#12,#13) live in the separate `prover` v1 crate, which this driver does not drive; prover2 BASE_COMPONENTS has no M-extension component at all."
+    opcodes_exercised_in_published_run:
+      - "ADD"
+      - "AND"
+      - "OR"
+      - "SLL"
+      - "SLT"
+      - "SLTU"
+      - "SRA"
+      - "SRL"
+      - "SUB"
+      - "XOR"
+    frozen_seed_ids:
+      - "op_add"
+      - "op_and"
+      - "op_or"
+      - "op_sll"
+      - "op_slt"
+      - "op_sltu"
+      - "op_sra"
+      - "op_srl"
+      - "op_sub"
+      - "op_xor"
+    capability:
+      nth_supported:
+        value: false
+        note: "nth=-1 only. k_trace emulates twice (Harvard pass then Linear pass) with one global occurrence counter."
+      mem_read_hookable:
+        value: false
+        note: "Only Step.result is perturbed (vm/src/trace.rs:305-315). Load delivered values move only as a CONSEQUENCE of a forged register, because the honest emulator continues from the forged value."
+      address_hookable:
+        value: false
+        note: "No way to move a MemoryRecord's address without moving the register that feeds it. Recorded as BIND-V2 in the nexus record survey."
+      timestamp_hookable:
+        value: false
+        note: "Step.timestamp (clk) is not hookable."
+      init_value_hookable:
+        value: false
+        note: "BIND-V4: no reachable boundary-init record field. Memory-initialisation values are ELF-side, changeable only by editing the seed, not per candidate."
+      final_value_hookable:
+        value: false
+        note: "Not hookable; and the public output is a fixed REGION, not the final state, so an arbitrary-address finalise write would not be observable either."
+      next_pc_hookable:
+        value: "partial"
+        note: "Step.next_pc is not hookable at the record layer. A non-record-layer seam exists in the tree for reference: reorder_forge forges the FREE CPU pc column (prover2/machine/src/components/cpu/mod.rs:35-79, applied at cpu/trace.rs:69-71 and cpu/mod.rs:125-140)."
+      hint_hookable:
+        value: "partial"
+        note: "k_trace already takes private/public input slices (called as k_trace(elf, &[], &[], &[], 1)), so the channel exists and is unused. CAVEAT: the ECALL result write is mis-wired -- the hook is gated on instruction.op_a, which decodes to X0 for ECALL (riscv/instructions/macros.rs:21-35), while the true destination is X10 or X2 (ProgramStep::get_op_a, prover2/trace/src/program.rs:118-132). Fix that before using the hint path."
+      x0_hookable:
+        value: false
+        note: "The write-back hook is gated on instruction.op_a != Register::X0 (vm/src/trace.rs:309). One-line relaxation."
+  - target: "openvm"
+    repository: "https://github.com/openvm-org/openvm"
+    revision: "8f021b1f231469fc95de0c16b5193a004c5f21ea"
+    release: "v2.0.1"
+    guest_isa: "RV32IM"
+    guest_word_width: 32
+    proof_framework: "Plonky3 STARK (AIR, adapter/core split)"
+    proof_configuration: "Rv32ImConfig, BabyBearPoseidon2CpuEngine, persistent memory + Merkle, 23 AIRs (the v1.x volatile config the PoC needs was removed upstream in v2.0.0)"
+    measured_wall_seconds_per_candidate: 9.7
+    measured_wall_source: "the structure catalog honest_limits, 'Measured aggregate wall per candidate'. Aggregate over the shipped run on the hardware named in data/targets.csv; not a re-measurement by this phase."
+    seed_builder_symbol: "fn build_<id>_words() -> Vec<u32>"
+    seed_builder_note: "raw RISC-V words pushed through the REAL transpiler (Rv32I/Rv32M/Rv32Io extensions) in extensions/rv32im/tests/src/lacuna_eval.rs:125 (build_words) / :145 (build_exe). pc == byte offset (Program::pc_base = 0, DEFAULT_PC_STEP = 4), so instruction index i sits at pc = 4*i."
+    operand_source_today: "immediate"
+    operand_source_required: "hint"
+    operand_source_note: "TODAY IMMEDIATE: (a,b) = (0x8765_4321, 0x0000_0037) hard-coded once at extensions/rv32im/tests/src/lacuna_eval.rs:412 and materialised by LUI+ADDI. There is no Streams input. THE ONLY NON-IMMEDIATE CHANNEL IS THE HINT CHANNEL, which is a free column by design -- see input_contract.hint_caveat."
+    public_output:
+      out_of_circuit:
+        name: "public_values_as3"
+        what: "The executor-side read of address space 3: to_state.memory.memory.get_u8_slice(PUBLIC_VALUES_AS, 0, 4) at extensions/rv32im/tests/src/lacuna_eval.rs:279-281."
+        csv_columns: "honest_output / mutated_output / output_changed"
+      in_circuit:
+        name: "final_memory_root"
+        what: "MemoryMerklePvs.final_root, extracted at lacuna_eval.rs:311-321 from proofs.last().public_values[MERKLE_AIR_ID]. AS 3 is a subtree of the persistent Merkle tree and UserPublicValuesProof::verify walks the sibling path up to final_memory_root (system/memory/merkle/public_values.rs:85-120); verify_segments chains initial/final roots at crates/vm/src/arch/vm.rs:1272-1278."
+        csv_columns: "honest_committed_digest / mutated_committed_digest / digest_changed"
+      strict_predicate_reads: "out_of_circuit"
+      divergence_observed: "Not measured. openvm is one of the two targets where the final root covers the WHOLE image including the register file, so st_finalize_only and st_dead_write must be scored against the root, not against AS3."
+    mu_menu_variants_implemented:
+      - "boundary_max"
+      - "boundary_msb"
+      - "minus_B0"
+      - "minus_B1"
+      - "plus_B0"
+      - "plus_B1"
+      - "plus_B1_hi"
+      - "xor_b0"
+      - "xor_b15"
+      - "xor_b31"
+      - "zero"
+    known_unbound_opcodes: []
+    known_unbound_opcodes_note: "NOT DETERMINED. Use the substitution rule."
+    opcodes_exercised_in_published_run:
+      - "ADD"
+      - "AND"
+      - "DIV"
+      - "DIVU"
+      - "MUL"
+      - "MULH"
+      - "MULHSU"
+      - "MULHU"
+      - "OR"
+      - "REM"
+      - "REMU"
+      - "SLL"
+      - "SLT"
+      - "SLTU"
+      - "SRA"
+      - "SRL"
+      - "SUB"
+      - "XOR"
+    frozen_seed_ids:
+      - "op_add"
+      - "op_and"
+      - "op_div"
+      - "op_divu"
+      - "op_mul"
+      - "op_mulh"
+      - "op_mulhsu"
+      - "op_mulhu"
+      - "op_or"
+      - "op_rem"
+      - "op_remu"
+      - "op_sll"
+      - "op_slt"
+      - "op_sltu"
+      - "op_sra"
+      - "op_srl"
+      - "op_sub"
+      - "op_xor"
+    capability:
+      nth_supported:
+        value: "not_determined"
+        note: "Recorded as NOT DETERMINED. The honestly-run metered pass sizes record arenas from an UNPERTURBED execution, which interacts with per-execution arming in a way nobody has measured."
+      mem_read_hookable:
+        value: false
+        note: "LoadStoreCoreRecord::read_data / prev_data (loadstore/core.rs:246-248) and LoadSignExtendCoreRecord::{read_data,prev_data} (load_sign_extend/core.rs:178-179) are all COPIED VERBATIM into columns (loadstore/core.rs:343-345) and none of them is hooked."
+      address_hookable:
+        value: false
+        note: "Rv32LoadStoreAdapterRecord::rs1_val is not hooked. It is the field that feeds BOTH rs1_data[0..4] and mem_ptr_limbs[0..2], which is why it is the interesting one."
+      timestamp_hookable:
+        value: false
+        note: "MemoryReadAuxRecord::prev_timestamp and MemoryWriteBytesAuxRecord::{prev_timestamp,prev_data} exist inside every adapter record and none is hooked. This is the P-CLK / stale-value axis on openvm."
+      init_value_hookable:
+        value: false
+        note: "Reachable only OUTSIDE the hook, by mutating the SparseMemoryImage handed to VmExe::with_init_memory. The boundary chip is built from the MemoryImage (persistent.rs:214-262) and the volatile path is gone since v2.0.0."
+      final_value_hookable:
+        value: "partial"
+        note: "There is no finalize-value hook, but openvm is one of only two targets where the final image -- INCLUDING address space 1, the register file -- is inside the committed Merkle root (verify_segments chains final_memory_root, crates/vm/src/arch/vm.rs:1268-1319; MemoryDimensions indexes AS 1). So a write-back forgery at a dead destination is observable in the state object even though no finalize field is hooked."
+      next_pc_hookable:
+        value: false
+        note: "Not hooked. Note Rv32JalrCoreRecord re-encodes from_pc into rd_data[0..3] at jalr/core.rs:311-318 -- two independent copies of the pc in one row that the AIR never equates."
+      hint_hookable:
+        value: "partial"
+        note: "CORRECTION TO THE ORIGINAL BRIEFING. Rv32HintStoreVar::data (hintstore/mod.rs:313) IS a record field and the filler copies it verbatim into cols data[0..4] (mod.rs:606) under a byte-pair range check as its ONLY AIR constraint (mod.rs:235). The hook does NOT reach it -- the executor stores record.var[idx].data at mod.rs:479 BEFORE calling tracing_write at :483 -- so today only the memory copy moves. One line away from a coherent third attachment point."
+      x0_hookable:
+        value: true
+        note: "OP x0,x1,x2 is expressible in build_words today; it tests the needs_write column and its u32::MAX sentinel (adapters/rdwrite.rs:364)."
+  - target: "risc0"
+    repository: "https://github.com/risc0/risc0"
+    revision: "10fa97888d16cebf1b924c2079d9d18b939da6d3"
+    release: "(main)"
+    guest_isa: "RV32IM"
+    guest_word_width: 32
+    proof_framework: "zirgen generative circuit"
+    proof_configuration: "rv32im M3 zirgen circuit, CPU HAL, po2=14; independent Rust verifier risc0_zkp::verify::verify_v3"
+    measured_wall_seconds_per_candidate: 4.2
+    measured_wall_source: "the structure catalog honest_limits, 'Measured aggregate wall per candidate'. Aggregate over the shipped run on the hardware named in data/targets.csv; not a re-measurement by this phase."
+    seed_builder_symbol: "fn build_<id>(...) -> Seed"
+    seed_builder_note: "hand-encoded Vec<u32> through struct Asm (risc0/circuit/rv32im/src/prove/lacuna_eval.rs:199-249), finalised by Asm::program() into a MemoryImage at USER_START_ADDR+4. Asm has insn_r/i/s/u today; insn_b and insn_j are three lines each and unlock six structures at once."
+    operand_source_today: "immediate"
+    operand_source_required: "hint"
+    operand_source_note: "TODAY IMMEDIATE: OP_A = 0x1234_5679, OP_B = 0x0000_00b7 at prove/lacuna_eval.rs:316-317, materialised by Asm::li. No stdin, no input file, no host IO. THE ONLY NON-IMMEDIATE CHANNEL IS THE ecall READ HINT CHANNEL -- see input_contract.hint_caveat."
+    public_output:
+      out_of_circuit:
+        name: "none_captured"
+        what: "risc0 has no host IO in this driver (NullSyscall::host_read/host_write are unimplemented!(), prove/lacuna_eval.rs:346-352). The seed stores its word to GLOBAL_OUTPUT_ADDR and the terminate ecall lifts it into the seal."
+        csv_columns: "NA"
+      in_circuit:
+        name: "globals_out8"
+        what: "Globals out[8] at global index 21 (witness/witness.h:57-65; GroupInfo{global_count:54}, rv32im/src/verify.rs:31-34). EcallTerminateBlock::verify re-checks EQ(readOutput[i].wordAddr, OUTPUT_WORD+i) and GLOBAL_CHECK_U32 (circuit/ecall.ipp:107-111). Decoded by the driver at lacuna_eval.rs:402-424. globals.rootOut (indices 8..15) is the second, state-carrying committed object."
+        csv_columns: "honest_output / mutated_output / output_changed; rootOut in honest_committed_digest / mutated_committed_digest"
+      strict_predicate_reads: "in_circuit"
+      divergence_observed: "Not measured. rootOut carries the final register page, so st_finalize_only and st_dead_write must be scored against rootOut."
+    mu_menu_variants_implemented:
+      - "boundary_max"
+      - "boundary_msb"
+      - "minus_B0"
+      - "minus_B1"
+      - "plus_B0"
+      - "plus_B1"
+      - "plus_B1_hi"
+      - "xor_b0"
+      - "xor_b15"
+      - "xor_b31"
+      - "zero"
+    known_unbound_opcodes: []
+    known_unbound_opcodes_note: "NOT DETERMINED. Use the substitution rule."
+    opcodes_exercised_in_published_run:
+      - "ADD"
+      - "AND"
+      - "DIV"
+      - "DIVU"
+      - "MUL"
+      - "MULH"
+      - "MULHSU"
+      - "MULHU"
+      - "OR"
+      - "REM"
+      - "REMU"
+      - "SLL"
+      - "SLT"
+      - "SLTU"
+      - "SRA"
+      - "SRL"
+      - "SUB"
+      - "XOR"
+    frozen_seed_ids:
+      - "ADD_single_op"
+      - "AND_single_op"
+      - "DIVU_single_op"
+      - "DIV_single_op"
+      - "MULHSU_single_op"
+      - "MULHU_single_op"
+      - "MULH_single_op"
+      - "MUL_single_op"
+      - "OR_single_op"
+      - "REMU_single_op"
+      - "REM_single_op"
+      - "SLL_single_op"
+      - "SLTU_single_op"
+      - "SLT_single_op"
+      - "SRA_single_op"
+      - "SRL_single_op"
+      - "SUB_single_op"
+      - "XOR_single_op"
+    capability:
+      nth_supported:
+        value: true
+        note: "Per-execution arming works today. risc0 and pico are the only two."
+      mem_read_hookable:
+        value: false
+        note: "PhysMemReadWitness.value / read_phys_memory (prove/preflight/emu.rs:134-148) is not hooked."
+      address_hookable:
+        value: false
+        note: "Not hooked; addresses are recomputed."
+      timestamp_hookable:
+        value: false
+        note: "PhysMemRead/WriteWitness.prevCycle and the page.cycle assignments (emu.rs:146,:168 and register twins :382,:408) are not hooked. prevCycle is a PICUS_INPUT free column in the circuit (mem.ipp:26), bound only by the permutation argument and a cycle-diff lookup -- the P-CLK shape."
+      init_value_hookable:
+        value: false
+        note: "Memory::page_in (prove/preflight/paging.rs:97-119) is not hooked. PageInPartWitness.data[i] IS a genuine committed record field, so the lever exists and the work is a small hook."
+      final_value_hookable:
+        value: "partial"
+        note: "PageOutPartWitness.data[i]/.cycle[i] are not hooked, but risc0 is the second of the two targets whose committed object carries final state: globals.rootOut is set from the final image digest (prove/preflight/paging.rs:189) and the final register page is inside it."
+      next_pc_hookable:
+        value: false
+        note: "InstBranchWitness.didBranch (emu.rs:831) is a pure selector record field and is not hooked."
+      hint_hookable:
+        value: true
+        note: "do_ecall_read already routes its a0 return through the hooked write_reg (prove/preflight/emu.rs:952-958), and ReadWordWitness.io.value is surveyed as REACHABLE and unconstrained. One added ecall READ makes risc0 a one-instruction positive control."
+      x0_hookable:
+        value: true
+        note: "An R-type with rd=x0 in build_seed works today; it tests DestReg::isZero, which is recomputed from the record's rd index."
+  - target: "zisk"
+    repository: "https://github.com/0xPolygonHermez/zisk"
+    revision: "6182c8be9f4ec6baf7ee9771dd0668324f7112ed"
+    release: "(main, no tag)"
+    guest_isa: "RV64IMA"
+    guest_word_width: 64
+    proof_framework: "PIL2 / proofman"
+    proof_configuration: "-l emulator witness-gen + proofman CPU STARK inner proofs (96-thread pool), no-aggregation (-a) with the cross-instance Global Constraint #0 really checked; 13 state machines"
+    measured_wall_seconds_per_candidate: 73.0
+    measured_wall_source: "the structure catalog honest_limits, 'Measured aggregate wall per candidate'. Aggregate over the shipped run on the hardware named in data/targets.csv; not a re-measurement by this phase."
+    seed_builder_symbol: "guest file examples/lacuna-seed/src/bin/<id>.rs"
+    seed_builder_note: "Ordinary Rust guests built with cargo-zisk; the driver never rebuilds the program and varies only the 32-byte input file. A distinct ELF costs a fresh ~1.4 GB ROM merkleisation cached in ~/.zisk/cache, so prefer few, high-information seeds."
+    operand_source_today: "input"
+    operand_source_required: "input"
+    operand_source_note: "A length-prefixed little-endian input file passed with -i: [u64 payload_len=24][u64 sel][u64 a][u64 b], read by the guest with ziskos::io::read_input_slice() (examples/lacuna-seed/src/main.rs:52-57). Nothing is baked in."
+    public_output:
+      out_of_circuit:
+        name: "output_region_via_ziskemu"
+        what: "The driver re-runs ziskemu -e ELF -i INPUT -c, which prints emu.get_output_32() -- 64 u32 read from OUTPUT_ADDR=0xA001_0000 (emulator/src/emu.rs:2700-2710). INDIRECT: with -a (no aggregation) result.get_public_values_slice returns an empty slice, so the driver cannot read the publics off the proof."
+        csv_columns: "honest_output / mutated_output / output_changed"
+      in_circuit:
+        name: "pil_public_inputs64"
+        what: "pil/zisk.pil:60 declares public inputs[64]; pil/zisk.pil:146-148 binds them, by a GLOBAL constraint, to the 32 pubout operations the Main trace emitted, which are bound to memory at OUTPUT_ADDR..+256 through the MEMORY bus. ZISK_PUBLICS = 64 (verifier/src/verifier.rs:7)."
+        csv_columns: "NOT CAPTURED TODAY -- the -a path returns an empty publics slice. A port that adds this must say so in the run_tag."
+      strict_predicate_reads: "out_of_circuit"
+      divergence_observed: "Cannot be measured until the in-circuit object is captured. Record that as a gap, not as agreement."
+    mu_menu_variants_implemented:
+      - "E1_add_i0"
+      - "E1_sub_i0"
+      - "E2_2p63"
+      - "E2_max"
+      - "E2_zero"
+      - "E3_j0"
+      - "E3_j63"
+    known_unbound_opcodes: []
+    known_unbound_opcodes_note: "NOT DETERMINED at the record layer for a REGISTER result -- zisk's result value c is not a record field. The nearest known-unbound surface is catalog #16 (LWU/LHU high lane), which is a LOAD WIDTH, reachable through st_subword_lane rather than through an ALU opcode."
+    opcodes_exercised_in_published_run:
+      - "ADD"
+      - "AND"
+      - "DIVU"
+      - "MUL"
+      - "MULHU"
+      - "SLL"
+    frozen_seed_ids:
+      - "add"
+      - "and"
+      - "divu"
+      - "mul"
+      - "mulhu"
+      - "sll"
+    capability:
+      nth_supported:
+        value: false
+        note: "ZISK_WB_NTH exists (wb_perturb.rs) but the survey records it as PRESENT BUT UNUSABLE in the prove process -- effectively only nth=every works. The catalog instead records zisk as NOT DETERMINED. Treated as false here, and listed as an open question in README.md; resolve it with a run, not with prose."
+      mem_read_hookable:
+        value: "partial"
+        note: "A narrow-load seam exists and is NOT part of LACUNA: zisk_forge_narrow_load(width, value, memalign_side) at core/src/mem.rs:33-46, called at core/src/mem.rs:368,488,839,862 and state-machines/mem-common/src/mem_helpers.rs:156. It is hard-keyed to width==4 && value==0xDEADBEEF and to ZISK_FORGE_MEMALIGN / ZISK_FORGE_MEMALIGN_ONLY. It is the ready-made template for a generic read-side field and the direct route to catalog #16."
+      address_hookable:
+        value: false
+        note: "Not hookable."
+      timestamp_hookable:
+        value: false
+        note: "STRUCTURALLY ABSENT, not merely unhooked: the row timestamp is a fixed column plus an airval (STEP), so the entire BINDING/order mode is inexpressible on zisk. A publishable negative."
+      init_value_hookable:
+        value: "partial"
+        note: "zisk delivers its whole input region through EmuTrace.mem_reads, so an init-value lever is a read-side hook alongside the existing get_value_to_store hook (emulator/src/emu.rs:2781)."
+      final_value_hookable:
+        value: false
+        note: "Not hookable, and the committed object is the fixed OUTPUT REGION at OUTPUT_ADDR, not the final state."
+      next_pc_hookable:
+        value: false
+        note: "Not hookable."
+      hint_hookable:
+        value: "partial"
+        note: "The guest already reads its operands from ziskos::io::read_input_slice, so the channel exists; the input region arrives via mem_reads and is not separately hooked."
+      x0_hookable:
+        value: "not_determined"
+        note: "The feasibility assessment has NO cell for (st_x0_dark_write, zisk) and the disagreement note lists only sp1/ceno/openvm/risc0 as expressible today and pico/nexus as needing a relaxation. Not assessed."

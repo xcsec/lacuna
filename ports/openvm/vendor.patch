@@ -1,0 +1,106 @@
+diff --git a/crates/vm/src/arch/interpreter_preflight.rs b/crates/vm/src/arch/interpreter_preflight.rs
+index 400fa8863..de58436c5 100644
+--- a/crates/vm/src/arch/interpreter_preflight.rs
++++ b/crates/vm/src/arch/interpreter_preflight.rs
+@@ -236,6 +236,11 @@ impl<F: PrimeField32, E> PreflightInterpretedInstance<F, E> {
+             // length equal to num_airs
+             state.ctx.arenas.get_unchecked_mut(air_idx)
+         };
++        // LACUNA record-layer hook: arms the write-back perturbation for this static pc.
++        // No-op (one relaxed atomic load) unless `wb_perturb::with(..)` is active.
++        if crate::arch::wb_perturb::enabled() {
++            crate::arch::wb_perturb::begin(pc);
++        }
+         let vm_state_mut = state.vm_state.into_mut(arena);
+         executor.execute(vm_state_mut, &pc_entry.insn)?;
+ 
+diff --git a/crates/vm/src/arch/mod.rs b/crates/vm/src/arch/mod.rs
+index c26bd364e..97a186f3a 100644
+--- a/crates/vm/src/arch/mod.rs
++++ b/crates/vm/src/arch/mod.rs
+@@ -12,6 +12,7 @@ mod integration_api;
+ /// [RecordArena] trait definitions and implementations. Currently there are two concrete
+ /// implementations: [MatrixRecordArena] and [DenseRecordArena].
+ mod record_arena;
++pub mod record_routing;
+ /// VM state definitions
+ mod state;
+ /// Top level [VmExecutor] and [VirtualMachine] constructor and API.
+@@ -28,6 +29,8 @@ pub mod interpreter_preflight;
+ /// Testing framework
+ #[cfg(any(test, feature = "test-utils"))]
+ pub mod testing;
++/// LACUNA record-layer write-back perturbation hook (evaluation instrumentation, default OFF).
++pub mod wb_perturb;
+ /// zkvm-fuzz executor-injection helpers (ARGUZZ-style fault injection).
+ pub mod zkvm_fuzz;
+ 
+diff --git a/extensions/rv32im/circuit/src/adapters/mod.rs b/extensions/rv32im/circuit/src/adapters/mod.rs
+index ecacf1e29..0561bac62 100644
+--- a/extensions/rv32im/circuit/src/adapters/mod.rs
++++ b/extensions/rv32im/circuit/src/adapters/mod.rs
+@@ -120,8 +120,17 @@ pub fn timed_write<const N: usize>(
+     memory: &mut TracingMemory,
+     address_space: u32,
+     ptr: u32,
+-    data: [u8; N],
++    mut data: [u8; N],
+ ) -> (u32, [u8; N]) {
++    // LACUNA record-layer hook (default OFF; one relaxed atomic load when disabled).
++    // This is THE single architectural write-back path for every rv32im chip.
++    if N == RV32_REGISTER_NUM_LIMBS && openvm_circuit::arch::wb_perturb::enabled() {
++        // SAFETY: N == RV32_REGISTER_NUM_LIMBS == 4 checked above; [u8; N] and [u8; 4]
++        // have identical layout.
++        let word: &mut [u8; RV32_REGISTER_NUM_LIMBS] =
++            unsafe { &mut *(data.as_mut_ptr() as *mut [u8; RV32_REGISTER_NUM_LIMBS]) };
++        openvm_circuit::arch::wb_perturb::on_write_back_word(word);
++    }
+     debug_assert!(
+         address_space == RV32_REGISTER_AS
+             || address_space == RV32_MEMORY_AS
+diff --git a/extensions/rv32im/circuit/src/hintstore/mod.rs b/extensions/rv32im/circuit/src/hintstore/mod.rs
+index 4ba53ecb2..23e7c860b 100644
+--- a/extensions/rv32im/circuit/src/hintstore/mod.rs
++++ b/extensions/rv32im/circuit/src/hintstore/mod.rs
+@@ -478,6 +478,15 @@ where
+             let data: [u8; RV32_REGISTER_NUM_LIMBS] =
+                 data_f.map(|byte| byte.as_canonical_u32() as u8);
+ 
++            // LACUNA record-layer hook (default OFF; one relaxed atomic load when disabled).
++            // `Rv32HintStoreVar::data` is a genuine core-record result field: the filler copies
++            // it verbatim into `cols.data` and the only AIR constraint on it is the byte-pair
++            // range check. Perturbing it HERE -- before it is stored in the record and before
++            // the `tracing_write` below -- keeps record and memory coherent, exactly as the
++            // `jal_lui` hook does. `on_result_word` marks the instruction as already perturbed,
++            // so the `timed_write` hook does not apply the mutation a second time.
++            let data = openvm_circuit::arch::wb_perturb::on_result_word(data);
++
+             record.var[idx].data = data;
+ 
+             tracing_write(
+diff --git a/extensions/rv32im/circuit/src/jal_lui/core.rs b/extensions/rv32im/circuit/src/jal_lui/core.rs
+index b32e88d38..dc6fc9d5d 100644
+--- a/extensions/rv32im/circuit/src/jal_lui/core.rs
++++ b/extensions/rv32im/circuit/src/jal_lui/core.rs
+@@ -193,6 +193,10 @@ where
+         let signed_imm = get_signed_imm(is_jal, imm);
+ 
+         let (to_pc, rd_data) = run_jal_lui(is_jal, *state.pc, signed_imm);
++        // LACUNA record-layer hook (default OFF): `rd_data` is the ONLY rv32im core-record
++        // result field (every other core record stores operands and the filler recomputes).
++        // Perturbing it here keeps the core record and the memory write coherent.
++        let rd_data = openvm_circuit::arch::wb_perturb::on_result_word(rd_data);
+ 
+         core_record.imm = imm.as_canonical_u32();
+         core_record.rd_data = rd_data;
+diff --git a/extensions/rv32im/tests/src/lib.rs b/extensions/rv32im/tests/src/lib.rs
+index ba415ca4e..337897a3a 100644
+--- a/extensions/rv32im/tests/src/lib.rs
++++ b/extensions/rv32im/tests/src/lib.rs
+@@ -1,3 +1,6 @@
++#[cfg(test)]
++mod lacuna_eval;
++
+ #[cfg(test)]
+ mod tests {
+     use eyre::Result;

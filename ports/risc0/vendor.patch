@@ -1,0 +1,204 @@
+diff --git a/risc0/circuit/rv32im/src/prove.rs b/risc0/circuit/rv32im/src/prove.rs
+old mode 100644
+new mode 100755
+index 1a708e5..43376ae
+--- a/risc0/circuit/rv32im/src/prove.rs
++++ b/risc0/circuit/rv32im/src/prove.rs
+@@ -15,6 +15,11 @@
+ 
+ mod preflight;
+ 
++
++/// LACUNA record-layer mutation enumeration driver (test-only).
++#[cfg(test)]
++mod lacuna_eval;
++
+ /// The old preflight implementation
+ #[allow(dead_code)]
+ mod preflight_cxx;
+@@ -59,6 +64,25 @@ impl ProverContext {
+     }
+ 
+     pub fn prove(&self, preflight: &PreflightContext) -> Result<Seal> {
++        let transcript = self.prove_no_verify(preflight)?;
++        verify(&transcript)?;
++
++        Ok(transcript)
++    }
++
++    /// Run the prover and return the seal without the trailing *Rust* verify.
++    ///
++    /// Note this does NOT skip all verification: `risc0_circuit_rv32im_prove`
++    /// (cxx/rv32im/ffi.cpp:284) writes the transcript and then runs the C++
++    /// verifier `verifyRv32im` on it, so an unsatisfying witness surfaces as an
++    /// `Err` from the FFI call. The transcript is stored before that check
++    /// (ffi.cpp:293), so `transcript_raw` can still retrieve it.
++    ///
++    /// Exists so a caller can time proving and verification separately and
++    /// distinguish "the prover failed" from "the verifier rejected"; `prove`
++    /// keeps the self-verifying behaviour.
++    #[doc(hidden)]
++    pub fn prove_no_verify(&self, preflight: &PreflightContext) -> Result<Seal> {
+         tracing::debug!("prove");
+         ffi_wrap_void(|| unsafe {
+             risc0_circuit_rv32im_prove(
+@@ -70,10 +94,14 @@ impl ProverContext {
+             )
+         })?;
+ 
+-        let transcript = self.transcript()?;
+-        verify(&transcript)?;
++        self.transcript()
++    }
+ 
+-        Ok(transcript)
++    /// The transcript the prover last wrote, even if the FFI's own C++
++    /// verification of it failed afterwards.
++    #[doc(hidden)]
++    pub fn transcript_raw(&self) -> Result<Seal> {
++        self.transcript()
+     }
+ 
+     fn transcript(&self) -> Result<Seal> {
+diff --git a/risc0/circuit/rv32im/src/prove/preflight/emu.rs b/risc0/circuit/rv32im/src/prove/preflight/emu.rs
+old mode 100644
+new mode 100755
+index 77506cd..de48324
+--- a/risc0/circuit/rv32im/src/prove/preflight/emu.rs
++++ b/risc0/circuit/rv32im/src/prove/preflight/emu.rs
+@@ -395,6 +395,8 @@ impl<HostIoT: HostIo> Emulator<HostIoT> {
+     }
+ 
+     fn write_reg(&mut self, reg: u32, value: u32) -> RegMemWriteWitness {
++        // LACUNA record-layer hook; identity unless armed (see `wb_perturb`).
++        let value = wb_perturb::on_write_back(self.pc, value);
+         let word_num = self.reg_offset + reg + if reg == 0 { 64 } else { 0 };
+         let record = RegMemWriteWitness {
+             wordAddr: Self::REG_PAGE_ADDR + word_num,
+@@ -1446,3 +1448,126 @@ pub fn emulate(
+ 
+     Ok(done)
+ }
++
++// ---------------------------------------------------------------------------
++// LACUNA record-layer write-back perturbation hook.
++//
++// TEST-ONLY INSTRUMENTATION. Default OFF (`ENABLED == false`), touches no
++// constraint, and is a pure identity function unless explicitly armed by
++// `wb_perturb::with(..)`.
++//
++// `Emulator::write_reg` (below) is the single architectural register
++// write-back choke point of the preflight record generator: every rv32im
++// instruction that produces an architectural result routes it through there,
++// and the value it stores is what lands in `RegMemWriteWitness.value` inside
++// the flat `aux` arena that `ProverContext::prove` hands to the C++ prover.
++// Because `write_reg` also updates the register page, a perturbed value
++// propagates exactly as an honest one would: later reads, dependent stores,
++// the paged-out register page and therefore the committed `rootOut` global all
++// follow from it.
++// ---------------------------------------------------------------------------
++#[allow(dead_code)]
++pub mod wb_perturb {
++    use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
++    const R: Ordering = Ordering::Relaxed;
++
++    /// v ^ (1 << i)
++    pub const MU_XORBIT: usize = 0;
++    /// v + k  (wrapping); k = +/- B^i expresses the scalar-result template
++    pub const MU_ADDK: usize = 1;
++    /// v <- 0
++    pub const MU_ZERO: usize = 2;
++    /// v <- literal (boundary values)
++    pub const MU_SET: usize = 3;
++
++    static ENABLED: AtomicBool = AtomicBool::new(false);
++    static TARGET_PC: AtomicU32 = AtomicU32::new(u32::MAX);
++    static TARGET_NTH: AtomicI64 = AtomicI64::new(-1);
++    static SEEN: AtomicI64 = AtomicI64::new(0);
++    static MU_KIND: AtomicUsize = AtomicUsize::new(MU_XORBIT);
++    static MU_ARG: AtomicI64 = AtomicI64::new(0);
++    static HITS: AtomicUsize = AtomicUsize::new(0);
++    static SITE_EXECS: AtomicUsize = AtomicUsize::new(0);
++    static HONEST: AtomicU64 = AtomicU64::new(0);
++    static FORGED: AtomicU64 = AtomicU64::new(0);
++
++    /// Number of write-backs actually perturbed (0 => the site never fired).
++    pub fn hits() -> usize {
++        HITS.load(R)
++    }
++    /// Number of times the armed static pc reached the write-back choke point.
++    pub fn site_execs() -> usize {
++        SITE_EXECS.load(R)
++    }
++    pub fn honest_value() -> u32 {
++        HONEST.load(R) as u32
++    }
++    pub fn forged_value() -> u32 {
++        FORGED.load(R) as u32
++    }
++
++    /// Run `body` with the register write-back at `pc` perturbed by `mu`.
++    /// `nth < 0` arms every execution of that static pc. Cleared on return or
++    /// panic.
++    pub fn with<Res>(
++        pc: u32,
++        nth: i64,
++        mu_kind: usize,
++        mu_arg: i64,
++        body: impl FnOnce() -> Res,
++    ) -> Res {
++        TARGET_PC.store(pc, R);
++        TARGET_NTH.store(nth, R);
++        SEEN.store(0, R);
++        MU_KIND.store(mu_kind, R);
++        MU_ARG.store(mu_arg, R);
++        HITS.store(0, R);
++        SITE_EXECS.store(0, R);
++        HONEST.store(0, R);
++        FORGED.store(0, R);
++        ENABLED.store(true, R);
++        struct Clear;
++        impl Drop for Clear {
++            fn drop(&mut self) {
++                ENABLED.store(false, R);
++                TARGET_PC.store(u32::MAX, R);
++            }
++        }
++        let _c = Clear;
++        body()
++    }
++
++    #[inline]
++    fn mutate(v: u32) -> u32 {
++        let arg = MU_ARG.load(R);
++        match MU_KIND.load(R) {
++            MU_XORBIT => v ^ (1u32 << ((arg as u32) & 31)),
++            MU_ADDK => v.wrapping_add(arg as u32),
++            MU_ZERO => 0,
++            MU_SET => arg as u32,
++            _ => v,
++        }
++    }
++
++    /// THE choke point hook: called with the value an instruction writes back.
++    /// Returns the value the record should carry.
++    #[inline]
++    pub fn on_write_back(pc: u32, v: u32) -> u32 {
++        if !ENABLED.load(R) || pc != TARGET_PC.load(R) {
++            return v;
++        }
++        let n = SEEN.fetch_add(1, R);
++        SITE_EXECS.fetch_add(1, R);
++        let want = TARGET_NTH.load(R);
++        if want >= 0 && n != want {
++            return v;
++        }
++        let f = mutate(v);
++        if f != v {
++            HITS.fetch_add(1, R);
++            HONEST.store(v as u64, R);
++            FORGED.store(f as u64, R);
++        }
++        f
++    }
++}

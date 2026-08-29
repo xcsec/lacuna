@@ -1,0 +1,11 @@
+[package]
+name = "lacuna-eval"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Host-side (std) driver that drives the REAL ZisK prover+verifier for the record-layer
+# write-back mutation enumeration. Not part of the zisk workspace build.
+[workspace]
+
+[dev-dependencies]

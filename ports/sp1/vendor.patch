@@ -1,0 +1,416 @@
+diff --git a/crates/core/executor/src/lib.rs b/crates/core/executor/src/lib.rs
+index 4c5936e..0dbf4d5 100644
+--- a/crates/core/executor/src/lib.rs
++++ b/crates/core/executor/src/lib.rs
+@@ -43,6 +43,7 @@ pub use vm::{
+     memory::{CompressedMemory, CompressedPages},
+     results::CycleResult,
+     results::TrapResult,
++    wb_perturb,
+     shapes::{MAXIMUM_CYCLE_AREA, MAXIMUM_PADDING_AREA},
+     CoreVM,
+ };
+diff --git a/crates/core/executor/src/tracing.rs b/crates/core/executor/src/tracing.rs
+index 5b72329..7a0d418 100644
+--- a/crates/core/executor/src/tracing.rs
++++ b/crates/core/executor/src/tracing.rs
+@@ -171,6 +171,10 @@ impl TracingVM<'_, SupervisorMode> {
+         if op_a_0 {
+             a = 0;
+         }
++        // LACUNA: keep the emitted event's `a` coherent with the (possibly
++        // perturbed) register write-back record. Identity when the hook is
++        // disarmed, which is always outside the LACUNA evaluation driver.
++        a = crate::vm::wb_perturb::sync(a, rw_record.value);
+ 
+         self.local_memory_access.insert_record(rd as u64, rw_record);
+         self.local_memory_access.insert_record(rs1 as u64, rr_record);
+@@ -409,6 +413,10 @@ impl TracingVM<'_, UserMode> {
+         if op_a_0 {
+             a = 0;
+         }
++        // LACUNA: keep the emitted event's `a` coherent with the (possibly
++        // perturbed) register write-back record. Identity when the hook is
++        // disarmed, which is always outside the LACUNA evaluation driver.
++        a = crate::vm::wb_perturb::sync(a, rw_record.value);
+ 
+         self.local_memory_access.insert_record(rd as u64, rw_record);
+         self.local_memory_access.insert_record(rs1 as u64, rr_record);
+@@ -682,6 +690,10 @@ impl<'a, M: ExecutionMode> TracingVM<'a, M> {
+         if op_a_0 {
+             a = 0;
+         }
++        // LACUNA: keep the emitted event's `a` coherent with the (possibly
++        // perturbed) register write-back record. Identity when the hook is
++        // disarmed, which is always outside the LACUNA evaluation driver.
++        a = crate::vm::wb_perturb::sync(a, rw_record.value);
+ 
+         self.emit_events(
+             self.core.clk(),
+@@ -732,6 +744,10 @@ impl<'a, M: ExecutionMode> TracingVM<'a, M> {
+         if op_a_0 {
+             a = 0;
+         }
++        // LACUNA: keep the emitted event's `a` coherent with the (possibly
++        // perturbed) register write-back record. Identity when the hook is
++        // disarmed, which is always outside the LACUNA evaluation driver.
++        a = crate::vm::wb_perturb::sync(a, rd_record.value);
+ 
+         self.emit_events(
+             self.core.clk(),
+@@ -854,6 +870,10 @@ impl<'a, M: ExecutionMode> TracingVM<'a, M> {
+         if op_a_0 {
+             a = 0;
+         }
++        // LACUNA: keep the emitted event's `a` coherent with the (possibly
++        // perturbed) register write-back record. Identity when the hook is
++        // disarmed, which is always outside the LACUNA evaluation driver.
++        a = crate::vm::wb_perturb::sync(a, rw_record.value);
+ 
+         self.emit_events(
+             self.core.clk(),
+diff --git a/crates/core/executor/src/vm.rs b/crates/core/executor/src/vm.rs
+index c74593a..ee8daf4 100644
+--- a/crates/core/executor/src/vm.rs
++++ b/crates/core/executor/src/vm.rs
+@@ -33,6 +33,148 @@ pub(crate) mod syscall;
+ const CLK_INC: u64 = CLK_INC_32 as u64;
+ const PC_INC: u64 = PC_INC_32 as u64;
+ 
++/// LACUNA — generic record-layer write-back perturbation (TEST-ONLY, default OFF).
++///
++/// This is the SP1 analogue of the single architectural write-back choke point used
++/// on pico (`on_reg_write`, called from `rw()`) and on nexus
++/// (`wb_perturb::on_write_back`, called from `trace::step`).
++///
++/// In SP1 the record-producing executor is [`CoreVM`] (re-executed over the minimal
++/// trace by `TracingVM`), and *every* architectural register write-back — ALU,
++/// load, jump, U-type and ecall — funnels through [`CoreVM::rw`]. Arming this
++/// module rewrites the value at one static pc: the rewritten value lands in
++/// `self.registers` (so the rest of the honest execution continues from it) and in
++/// the returned `MemoryWriteRecord` (so the memory-consistency record follows), and
++/// `sync()` is used at the event-emission sites so the typed event's `a` field stays
++/// coherent with the register write.
++///
++/// It contains no opcode, operand, chip or column knowledge: the arming key is
++/// `(static pc, n-th execution of that pc)` and the rewriting menu is
++/// instruction-independent.
++pub mod wb_perturb {
++    use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
++    const R: Ordering = Ordering::Relaxed;
++
++    /// v ^ (1 << i)
++    pub const MU_XORBIT: usize = 0;
++    /// v + k (wrapping); k = +/- B^i expresses the scalar-result template
++    pub const MU_ADDK: usize = 1;
++    /// v <- 0
++    pub const MU_ZERO: usize = 2;
++    /// v <- literal (boundary values)
++    pub const MU_SET: usize = 3;
++
++    static ENABLED: AtomicBool = AtomicBool::new(false);
++    static TARGET_PC: AtomicU64 = AtomicU64::new(u64::MAX);
++    static TARGET_NTH: AtomicI64 = AtomicI64::new(-1);
++    static SEEN: AtomicI64 = AtomicI64::new(0);
++    static MU_KIND: AtomicUsize = AtomicUsize::new(MU_XORBIT);
++    static MU_ARG: AtomicI64 = AtomicI64::new(0);
++    static HITS: AtomicUsize = AtomicUsize::new(0);
++    static HONEST: AtomicU64 = AtomicU64::new(0);
++    static FORGED: AtomicU64 = AtomicU64::new(0);
++
++    /// Number of write-backs actually perturbed (0 => the site never executed).
++    #[must_use]
++    pub fn hits() -> usize {
++        HITS.load(R)
++    }
++
++    /// The honest value of the last perturbed write-back.
++    #[must_use]
++    pub fn honest_value() -> u64 {
++        HONEST.load(R)
++    }
++
++    /// The forged value of the last perturbed write-back.
++    #[must_use]
++    pub fn forged_value() -> u64 {
++        FORGED.load(R)
++    }
++
++    /// Is the hook currently armed?
++    #[must_use]
++    pub fn armed() -> bool {
++        ENABLED.load(R)
++    }
++
++    /// Run `body` with the write-back at `pc` perturbed by `mu`. Cleared on return
++    /// or panic. `nth < 0` arms every execution of that static pc.
++    pub fn with<Res>(
++        pc: u64,
++        nth: i64,
++        mu_kind: usize,
++        mu_arg: i64,
++        body: impl FnOnce() -> Res,
++    ) -> Res {
++        TARGET_PC.store(pc, R);
++        TARGET_NTH.store(nth, R);
++        SEEN.store(0, R);
++        MU_KIND.store(mu_kind, R);
++        MU_ARG.store(mu_arg, R);
++        HITS.store(0, R);
++        HONEST.store(0, R);
++        FORGED.store(0, R);
++        ENABLED.store(true, R);
++        struct Clear;
++        impl Drop for Clear {
++            fn drop(&mut self) {
++                ENABLED.store(false, R);
++                TARGET_PC.store(u64::MAX, R);
++            }
++        }
++        let _c = Clear;
++        body()
++    }
++
++    #[inline]
++    fn mutate(v: u64) -> u64 {
++        let arg = MU_ARG.load(R);
++        match MU_KIND.load(R) {
++            MU_XORBIT => v ^ (1u64 << ((arg as u64) & 63)),
++            MU_ADDK => v.wrapping_add(arg as u64),
++            MU_ZERO => 0,
++            MU_SET => arg as u64,
++            _ => v,
++        }
++    }
++
++    /// THE choke point: called from `CoreVM::rw` with the value the instruction
++    /// wrote back. Returns the value to record.
++    #[inline]
++    pub fn on_write_back(pc: u64, v: u64) -> u64 {
++        if !ENABLED.load(R) || pc != TARGET_PC.load(R) {
++            return v;
++        }
++        let n = SEEN.fetch_add(1, R);
++        let want = TARGET_NTH.load(R);
++        if want >= 0 && n != want {
++            return v;
++        }
++        let f = mutate(v);
++        if f == v {
++            return v;
++        }
++        HONEST.store(v, R);
++        FORGED.store(f, R);
++        HITS.fetch_add(1, R);
++        f
++    }
++
++    /// Keep a typed event's `a` field coherent with the (possibly perturbed)
++    /// register write record. When the hook is disarmed this is the identity on
++    /// `honest`, so no honest behaviour and no constraint changes.
++    #[inline]
++    #[must_use]
++    pub fn sync(honest: u64, recorded: u64) -> u64 {
++        if ENABLED.load(R) {
++            recorded
++        } else {
++            honest
++        }
++    }
++}
++
+ /// A RISC-V VM that uses a [`MinimalTrace`] to oracle memory & page permission access.
+ ///
+ /// The type parameter `M` determines whether page protection checks are enabled.
+@@ -932,6 +1074,18 @@ impl<M: ExecutionMode> CoreVM<'_, M> {
+     #[inline]
+     fn rw(&mut self, register: Register, value: u64) -> MemoryWriteRecord {
+         let value = if register == Register::X0 { 0 } else { value };
++        // LACUNA record-layer write-back hook (no-op unless armed; see `wb_perturb`).
++        // This is the single architectural write-back choke point of the
++        // record-producing executor.
++        //
++        // Applied AFTER the x0 squash, so that the `st_x0_dark_write` structure is
++        // expressible: without this ordering the squash would undo the mutation at
++        // exactly the site that structure exists to probe, and sp1's four x0 chips
++        // (AluX0 / AluX0User / LoadX0 / LoadX0User) could never be reached with a
++        // forged value. For every other register the two orderings are identical,
++        // and no published seed contains an x0 write-back site, so no published
++        // candidate changes.
++        let value = wb_perturb::on_write_back(self.pc, value);
+ 
+         let prev_record = self.registers[register as usize];
+         let new_record = MemoryRecord { timestamp: self.timestamp(MemoryAccessPosition::A), value };
+diff --git a/crates/core/machine/src/utils/prove.rs b/crates/core/machine/src/utils/prove.rs
+index b552db0..c2b0d92 100644
+--- a/crates/core/machine/src/utils/prove.rs
++++ b/crates/core/machine/src/utils/prove.rs
+@@ -120,6 +120,10 @@ where
+             // Generate dependencies and collect records
+             let mut records = vec![record];
+             records.extend(deferred_records);
++            // LACUNA record-field hook (no-op unless armed; see `record_perturb`).
++            // Applied before dependency generation so the rewritten field
++            // regenerates every downstream event and trace.
++            record_perturb::apply(&mut records);
+             machine.generate_dependencies(records.iter_mut(), None);
+             all_records.extend(records);
+         }
+@@ -129,6 +133,142 @@ where
+     Ok((all_records, cycles))
+ }
+ 
++
++/// LACUNA — generic ExecutionRecord field perturbation (TEST-ONLY, default OFF).
++///
++/// The write-back hook in `sp1_core_executor::wb_perturb` covers every value an
++/// instruction produces. This second hook covers record fields that no instruction
++/// write-back produces: it rewrites one field of one already-generated
++/// [`ExecutionRecord`] just before `generate_dependencies` runs, so the dependent
++/// byte/range events and every chip trace are regenerated from the rewritten record.
++///
++/// Default OFF: `apply` returns immediately unless armed, so no honest behaviour and
++/// no constraint is affected.
++pub mod record_perturb {
++    use super::ExecutionRecord;
++    use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
++    const R: Ordering = Ordering::Relaxed;
++
++    /// `global_memory_initialize_events[k].value`
++    pub const F_MEM_INIT_VALUE: usize = 0;
++    /// `global_memory_finalize_events[k].value`
++    pub const F_MEM_FINAL_VALUE: usize = 1;
++
++    /// v ^ (1 << i)
++    pub const MU_XORBIT: usize = 0;
++    /// v + k (wrapping)
++    pub const MU_ADDK: usize = 1;
++    /// v <- 0
++    pub const MU_ZERO: usize = 2;
++    /// v <- literal
++    pub const MU_SET: usize = 3;
++
++    static ENABLED: AtomicBool = AtomicBool::new(false);
++    static FIELD: AtomicUsize = AtomicUsize::new(F_MEM_INIT_VALUE);
++    /// Which entry of the (globally indexed, addr-ordered) event list to rewrite.
++    static TARGET_IDX: AtomicI64 = AtomicI64::new(-1);
++    static SEEN: AtomicI64 = AtomicI64::new(0);
++    static MU_KIND: AtomicUsize = AtomicUsize::new(MU_XORBIT);
++    static MU_ARG: AtomicI64 = AtomicI64::new(0);
++    static HITS: AtomicUsize = AtomicUsize::new(0);
++    static HONEST: AtomicU64 = AtomicU64::new(0);
++    static FORGED: AtomicU64 = AtomicU64::new(0);
++    static ADDR: AtomicU64 = AtomicU64::new(0);
++
++    /// Number of record fields actually rewritten (0 => the site did not exist).
++    #[must_use]
++    pub fn hits() -> usize {
++        HITS.load(R)
++    }
++    /// Honest value of the last rewritten field.
++    #[must_use]
++    pub fn honest_value() -> u64 {
++        HONEST.load(R)
++    }
++    /// Forged value of the last rewritten field.
++    #[must_use]
++    pub fn forged_value() -> u64 {
++        FORGED.load(R)
++    }
++    /// Address of the last rewritten event.
++    #[must_use]
++    pub fn addr() -> u64 {
++        ADDR.load(R)
++    }
++
++    /// Run `body` with the record field perturbed. Cleared on return or panic.
++    pub fn with<Res>(
++        field: usize,
++        idx: i64,
++        mu_kind: usize,
++        mu_arg: i64,
++        body: impl FnOnce() -> Res,
++    ) -> Res {
++        FIELD.store(field, R);
++        TARGET_IDX.store(idx, R);
++        SEEN.store(0, R);
++        MU_KIND.store(mu_kind, R);
++        MU_ARG.store(mu_arg, R);
++        HITS.store(0, R);
++        HONEST.store(0, R);
++        FORGED.store(0, R);
++        ADDR.store(0, R);
++        ENABLED.store(true, R);
++        struct Clear;
++        impl Drop for Clear {
++            fn drop(&mut self) {
++                ENABLED.store(false, R);
++                TARGET_IDX.store(-1, R);
++            }
++        }
++        let _c = Clear;
++        body()
++    }
++
++    #[inline]
++    fn mutate(v: u64) -> u64 {
++        let arg = MU_ARG.load(R);
++        match MU_KIND.load(R) {
++            MU_XORBIT => v ^ (1u64 << ((arg as u64) & 63)),
++            MU_ADDK => v.wrapping_add(arg as u64),
++            MU_ZERO => 0,
++            MU_SET => arg as u64,
++            _ => v,
++        }
++    }
++
++    /// Rewrite the armed field of `records`. No-op unless armed.
++    pub fn apply(records: &mut [ExecutionRecord]) {
++        if !ENABLED.load(R) {
++            return;
++        }
++        let field = FIELD.load(R);
++        let want = TARGET_IDX.load(R);
++        for record in records.iter_mut() {
++            let events = match field {
++                F_MEM_INIT_VALUE => &mut record.global_memory_initialize_events,
++                F_MEM_FINAL_VALUE => &mut record.global_memory_finalize_events,
++                _ => return,
++            };
++            for ev in events.iter_mut() {
++                let n = SEEN.fetch_add(1, R);
++                if want >= 0 && n != want {
++                    continue;
++                }
++                let f = mutate(ev.value);
++                if f == ev.value {
++                    continue;
++                }
++                HONEST.store(ev.value, R);
++                FORGED.store(f, R);
++                ADDR.store(ev.addr, R);
++                HITS.fetch_add(1, R);
++                ev.value = f;
++            }
++        }
++    }
++}
++
+ /// Postprocess into an existing [`ExecutionRecord`],
+ /// consisting of all the [`MemoryInitializeFinalizeEvent`]s.
+ #[tracing::instrument(name = "emit globals", skip_all)]
+diff --git a/crates/prover/src/lib.rs b/crates/prover/src/lib.rs
+index 121ae46..c936e05 100644
+--- a/crates/prover/src/lib.rs
++++ b/crates/prover/src/lib.rs
+@@ -7,6 +7,10 @@ pub mod utils;
+ pub mod verify;
+ pub mod worker;
+ 
++/// LACUNA record-layer mutation enumeration driver (test-only).
++#[cfg(test)]
++mod lacuna_eval;
++
+ pub use types::*;
+ 
+ pub use components::*;

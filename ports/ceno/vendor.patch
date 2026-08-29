@@ -1,0 +1,331 @@
+diff --git a/ceno_emul/src/lib.rs b/ceno_emul/src/lib.rs
+old mode 100644
+new mode 100755
+index db2a120b..7d51a19a
+--- a/ceno_emul/src/lib.rs
++++ b/ceno_emul/src/lib.rs
+@@ -12,11 +12,11 @@ mod tracer;
+ pub use tracer::{
+     Change, FullTracer, FullTracerConfig, LatestAccesses, MemOp, NextAccessPair, NextCycleAccess,
+     PreflightTracer, PreflightTracerConfig, ReadOp, ShardPlanBuilder, StepCellExtractor, StepIndex,
+-    StepRecord, Tracer, WriteOp,
++    StepRecord, Tracer, WriteOp, ts_perturb,
+ };
+ 
+ mod vm_state;
+-pub use vm_state::{HaltState, VM_REG_COUNT, VMState};
++pub use vm_state::{HaltState, VM_REG_COUNT, VMState, wb_perturb};
+ 
+ mod rv32im;
+ pub use rv32im::{
+diff --git a/ceno_emul/src/tracer.rs b/ceno_emul/src/tracer.rs
+old mode 100644
+new mode 100755
+index 984af893..00538386
+--- a/ceno_emul/src/tracer.rs
++++ b/ceno_emul/src/tracer.rs
+@@ -120,6 +120,124 @@ fn init_mmio_min_max_access(
+     mmio_max_access
+ }
+ 
++/// LACUNA — generic record-layer ORDER (timestamp) perturbation (TEST-ONLY, default OFF).
++///
++/// `FullTracer::track_access` is the single point at which the *previous access
++/// cycle* that lands in a `StepRecord` op (`rs1/rs2/rd/memory_op.previous_cycle`)
++/// is produced. That field is a genuine single-point record hook: it feeds the
++/// `prev_ts` witness column, the `lt_cfg` AssertLt and the `shard_ctx.send` RAM
++/// record (ceno_zkvm/src/instructions/riscv/insn_base.rs:124,127-132,133-141).
++///
++/// Rewriting it here changes ONLY the recorded field; `latest_accesses` keeps the
++/// honest chain, so the rest of the execution is untouched. Arming key is
++/// `(static pc, subcycle, n-th)`; the menu is instruction-independent.
++/// Default OFF; it changes no constraint.
++pub mod ts_perturb {
++    use super::Cycle;
++    use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
++    const R: Ordering = Ordering::Relaxed;
++
++    /// prev + k (saturating at 0)
++    pub const MU_ADDK: usize = 1;
++    /// prev <- 0
++    pub const MU_ZERO: usize = 2;
++    /// prev <- literal
++    pub const MU_SET: usize = 3;
++
++    static ENABLED: AtomicBool = AtomicBool::new(false);
++    static TARGET_PC: AtomicU32 = AtomicU32::new(u32::MAX);
++    /// -1 = any subcycle
++    static TARGET_SUB: AtomicI64 = AtomicI64::new(-1);
++    static TARGET_NTH: AtomicI64 = AtomicI64::new(-1);
++    static SEEN: AtomicI64 = AtomicI64::new(0);
++    static MU_KIND: AtomicUsize = AtomicUsize::new(MU_ADDK);
++    static MU_ARG: AtomicI64 = AtomicI64::new(0);
++    static HITS: AtomicUsize = AtomicUsize::new(0);
++    static HONEST: AtomicU64 = AtomicU64::new(0);
++    static FORGED: AtomicU64 = AtomicU64::new(0);
++
++    pub fn hits() -> usize {
++        HITS.load(R)
++    }
++    pub fn honest_value() -> u64 {
++        HONEST.load(R)
++    }
++    pub fn forged_value() -> u64 {
++        FORGED.load(R)
++    }
++
++    pub fn with<Res>(
++        pc: u32,
++        subcycle: i64,
++        nth: i64,
++        mu_kind: usize,
++        mu_arg: i64,
++        body: impl FnOnce() -> Res,
++    ) -> Res {
++        TARGET_PC.store(pc, R);
++        TARGET_SUB.store(subcycle, R);
++        TARGET_NTH.store(nth, R);
++        SEEN.store(0, R);
++        MU_KIND.store(mu_kind, R);
++        MU_ARG.store(mu_arg, R);
++        HITS.store(0, R);
++        HONEST.store(0, R);
++        FORGED.store(0, R);
++        ENABLED.store(true, R);
++        struct Clear;
++        impl Drop for Clear {
++            fn drop(&mut self) {
++                ENABLED.store(false, R);
++                TARGET_PC.store(u32::MAX, R);
++            }
++        }
++        let _c = Clear;
++        body()
++    }
++
++    #[inline]
++    fn mutate(v: Cycle) -> Cycle {
++        let arg = MU_ARG.load(R);
++        match MU_KIND.load(R) {
++            MU_ADDK => {
++                if arg >= 0 {
++                    v.saturating_add(arg as u64)
++                } else {
++                    v.saturating_sub((-arg) as u64)
++                }
++            }
++            MU_ZERO => 0,
++            MU_SET => arg as u64,
++            _ => v,
++        }
++    }
++
++    /// THE choke point for the ORDER family.
++    #[inline(always)]
++    pub fn on_prev_cycle(pc: u32, subcycle: Cycle, prev: Cycle) -> Cycle {
++        if !ENABLED.load(R) || pc != TARGET_PC.load(R) {
++            return prev;
++        }
++        let want_sub = TARGET_SUB.load(R);
++        if want_sub >= 0 && subcycle != want_sub as u64 {
++            return prev;
++        }
++        let n = SEEN.fetch_add(1, R);
++        let want = TARGET_NTH.load(R);
++        if want >= 0 && n != want {
++            return prev;
++        }
++        let f = mutate(prev);
++        if f == prev {
++            return prev;
++        }
++        HONEST.store(prev, R);
++        FORGED.store(f, R);
++        HITS.fetch_add(1, R);
++        f
++    }
++}
++
+ pub trait Tracer {
+     type Record;
+     type Config;
+@@ -1006,7 +1124,15 @@ impl FullTracer {
+         // are distinguished via `subcycle ∈ [0, 3]`; the first touch of an address
+         // yields `0`.
+         let cur_cycle = self.records[self.pending_index].cycle + subcycle;
+-        self.latest_accesses.track(addr, cur_cycle)
++        let prev = self.latest_accesses.track(addr, cur_cycle);
++        // LACUNA record-layer ORDER hook (no-op unless armed; see `ts_perturb`).
++        // Rewrites only the value recorded into the StepRecord op; `latest_accesses`
++        // keeps the honest chain.
++        ts_perturb::on_prev_cycle(
++            self.records[self.pending_index].pc.before.0,
++            subcycle,
++            prev,
++        )
+     }
+ 
+     pub fn final_accesses(&self) -> &LatestAccesses {
+diff --git a/ceno_emul/src/vm_state.rs b/ceno_emul/src/vm_state.rs
+old mode 100644
+new mode 100755
+index 56d4d60b..d3e432b0
+--- a/ceno_emul/src/vm_state.rs
++++ b/ceno_emul/src/vm_state.rs
+@@ -11,6 +11,130 @@ use crate::{
+ use anyhow::{Result, anyhow};
+ use std::{iter::from_fn, ops::Deref, sync::Arc};
+ 
++/// LACUNA — generic record-layer write-back perturbation (TEST-ONLY, default OFF).
++///
++/// ceno's single architectural write-back choke point is
++/// [`VMState::store_register`] (this file): every instruction that produces an
++/// architectural result — compute, load, jal/jalr, lui/auipc, and the ecall
++/// RD_NULL dark write — funnels through it, and it is the one place that both
++///
++///   * hands the value to the tracer (`tracer.store_register` -> `StepRecord.rd`,
++///     which is what `Instruction::assign_instance` later consumes), and
++///   * updates the architectural register file,
++///
++/// so rewriting the value here makes the honest emulator continue from the
++/// perturbed value: every later register read, dependent store, memory record and
++/// public commit follows naturally, exactly as the honest pipeline would.
++///
++/// The module contains no opcode, operand, chip or column knowledge: the arming
++/// key is `(static pc, n-th execution of that pc)` and the rewriting menu is
++/// instruction-independent. Default OFF; it changes no constraint.
++pub mod wb_perturb {
++    use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
++    const R: Ordering = Ordering::Relaxed;
++
++    /// v ^ (1 << i)
++    pub const MU_XORBIT: usize = 0;
++    /// v + k  (wrapping); k = +/- B^i expresses the scalar-result template
++    pub const MU_ADDK: usize = 1;
++    /// v <- 0
++    pub const MU_ZERO: usize = 2;
++    /// v <- literal (boundary values)
++    pub const MU_SET: usize = 3;
++
++    static ENABLED: AtomicBool = AtomicBool::new(false);
++    static TARGET_PC: AtomicU32 = AtomicU32::new(u32::MAX);
++    static TARGET_NTH: AtomicI64 = AtomicI64::new(-1);
++    static SEEN: AtomicI64 = AtomicI64::new(0);
++    static MU_KIND: AtomicUsize = AtomicUsize::new(MU_XORBIT);
++    static MU_ARG: AtomicI64 = AtomicI64::new(0);
++    static HITS: AtomicUsize = AtomicUsize::new(0);
++    static HONEST: AtomicU64 = AtomicU64::new(0);
++    static FORGED: AtomicU64 = AtomicU64::new(0);
++
++    /// Number of write-backs actually perturbed (0 => the site never executed).
++    pub fn hits() -> usize {
++        HITS.load(R)
++    }
++    pub fn honest_value() -> u32 {
++        HONEST.load(R) as u32
++    }
++    pub fn forged_value() -> u32 {
++        FORGED.load(R) as u32
++    }
++    /// Reset the per-run counters without disarming (the ceno pipeline emulates the
++    /// same program more than once inside one armed scope: the preflight pass and
++    /// the witness replay).
++    pub fn reset_counters() {
++        SEEN.store(0, R);
++        HITS.store(0, R);
++    }
++
++    /// Run `body` with the write-back at `pc` perturbed by `mu`. Cleared on return
++    /// or panic.
++    pub fn with<Res>(
++        pc: u32,
++        nth: i64,
++        mu_kind: usize,
++        mu_arg: i64,
++        body: impl FnOnce() -> Res,
++    ) -> Res {
++        TARGET_PC.store(pc, R);
++        TARGET_NTH.store(nth, R);
++        SEEN.store(0, R);
++        MU_KIND.store(mu_kind, R);
++        MU_ARG.store(mu_arg, R);
++        HITS.store(0, R);
++        HONEST.store(0, R);
++        FORGED.store(0, R);
++        ENABLED.store(true, R);
++        struct Clear;
++        impl Drop for Clear {
++            fn drop(&mut self) {
++                ENABLED.store(false, R);
++                TARGET_PC.store(u32::MAX, R);
++            }
++        }
++        let _c = Clear;
++        body()
++    }
++
++    #[inline]
++    fn mutate(v: u32) -> u32 {
++        let arg = MU_ARG.load(R);
++        match MU_KIND.load(R) {
++            MU_XORBIT => v ^ (1u32 << ((arg as u32) & 31)),
++            MU_ADDK => v.wrapping_add(arg as u32),
++            MU_ZERO => 0,
++            MU_SET => arg as u32,
++            _ => v,
++        }
++    }
++
++    /// THE choke point: called once per architectural register write-back with the
++    /// value the instruction produced. Returns the value to record AND to commit to
++    /// the register file.
++    #[inline(always)]
++    pub fn on_write_back(pc: u32, v: u32) -> u32 {
++        if !ENABLED.load(R) || pc != TARGET_PC.load(R) {
++            return v;
++        }
++        let n = SEEN.fetch_add(1, R);
++        let want = TARGET_NTH.load(R);
++        if want >= 0 && n != want {
++            return v;
++        }
++        let f = mutate(v);
++        if f == v {
++            return v;
++        }
++        HONEST.store(v as u64, R);
++        FORGED.store(f as u64, R);
++        HITS.fetch_add(1, R);
++        f
++    }
++}
++
+ pub struct HaltState {
+     pub exit_code: u32,
+ }
+@@ -258,6 +382,10 @@ impl<T: Tracer> EmuContext for VMState<T> {
+     fn store_register(&mut self, idx: RegIdx, after: Word) -> Result<()> {
+         if idx != 0 {
+             let before = self.peek_register(idx);
++            // LACUNA record-layer write-back hook (no-op unless armed; see `wb_perturb`).
++            // Rewriting here perturbs the StepRecord AND the architectural register
++            // file at once, so the honest emulator continues from the perturbed value.
++            let after = wb_perturb::on_write_back(self.pc, after);
+             self.tracer.store_register(idx, Change { before, after });
+             self.registers[idx as usize] = after;
+         }
+diff --git a/ceno_zkvm/src/lib.rs b/ceno_zkvm/src/lib.rs
+old mode 100644
+new mode 100755
+index 707e7b71..fcdf0b18
+--- a/ceno_zkvm/src/lib.rs
++++ b/ceno_zkvm/src/lib.rs
+@@ -13,6 +13,8 @@ pub mod circuit_builder;
+ pub mod e2e;
+ pub mod gadgets;
+ mod keygen;
++#[cfg(test)]
++mod lacuna_eval;
+ pub mod precompiles;
+ pub mod state;
+ pub mod stats;

@@ -1,0 +1,64 @@
+diff --git a/emulator/src/bin/ziskemu.rs b/emulator/src/bin/ziskemu.rs
+index 599bcdb8d..ec13623aa 100644
+--- a/emulator/src/bin/ziskemu.rs
++++ b/emulator/src/bin/ziskemu.rs
+@@ -18,6 +18,11 @@ fn main() {
+     let emulator = ZiskEmulator;
+     let result = emulator.emulate(&options, None::<Box<dyn Fn(EmuTrace)>>);
+ 
++    // Record-layer perturbation hit count (test-only; prints only when hits>0).
++    let __wb_hits = ziskemu::wb_perturb::hits();
++    if __wb_hits > 0 || std::env::var_os("ZISK_WB_ENABLE").is_some() {
++        eprintln!("WB_HITS={__wb_hits}");
++    }
+     match result {
+         Ok(result) => {
+             // println!("Emulation completed successfully");
+diff --git a/emulator/src/emu.rs b/emulator/src/emu.rs
+index 76b6e013c..608947e82 100644
+--- a/emulator/src/emu.rs
++++ b/emulator/src/emu.rs
+@@ -1023,13 +1023,14 @@ impl<'a> Emu<'a> {
+                 }
+             }
+             STORE_IND => {
+-                // Calculate value
+-                let val: i64 = if instruction.store_pc {
+-                    self.ctx.inst_ctx.pc as i64 + instruction.jmp_offset2
+-                } else {
+-                    self.ctx.inst_ctx.c as i64
+-                };
+-                let val = val as u64;
++                // Calculate value.
++                // NOTE: this goes through `get_value_to_store` like every other store arm, so the
++                // record-layer write-back perturbation choke point covers indirect stores in the
++                // plain-emulation pass too. Before this it did not, while
++                // `store_c_mem_reads_generate` and `store_c_mem_reads_consume_databus` always did,
++                // so an armed STORE_IND pc perturbed witness generation but NOT the ziskemu run
++                // the driver reads its output from. Pure identity when the hook is disarmed.
++                let val = self.get_value_to_store(instruction);
+ 
+                 // Calculate memory address
+                 let mut addr = instruction.store_offset;
+@@ -2782,7 +2783,8 @@ impl<'a> Emu<'a> {
+         if instruction.store_pc {
+             (self.ctx.inst_ctx.pc as i64 + instruction.jmp_offset2) as u64
+         } else {
+-            self.ctx.inst_ctx.c
++            // Record-layer write-back perturbation choke point (test-only, default OFF).
++            crate::wb_perturb::on_write_back(self.ctx.inst_ctx.pc, self.ctx.inst_ctx.c)
+         }
+     }
+ 
+diff --git a/emulator/src/lib.rs b/emulator/src/lib.rs
+index aee970aed..e5bb7cbf6 100644
+--- a/emulator/src/lib.rs
++++ b/emulator/src/lib.rs
+@@ -24,6 +24,7 @@ mod emu_segment;
+ mod emulator;
+ mod emulator_errors;
+ pub mod stats;
++pub mod wb_perturb;
+ 
+ pub use disasm::*;
+ pub use elf_symbol_reader::*;

@@ -1,0 +1,518 @@
+diff --git a/crates/vm/src/system/memory/volatile/mod.rs b/crates/vm/src/system/memory/volatile/mod.rs
+index 40d005c4d..b2a6ce89e 100644
+--- a/crates/vm/src/system/memory/volatile/mod.rs
++++ b/crates/vm/src/system/memory/volatile/mod.rs
+@@ -37,6 +37,34 @@ use crate::system::memory::{
+ #[cfg(test)]
+ mod tests;
+ 
++/// TEST-ONLY malicious-prover forge seam (analogous to pico's `sltu_forge`).
++///
++/// `VolatileBoundaryAir::eval` sends `initial_data` on the memory bus at ts=0 with
++/// **no** constraint pinning it to 0 (it is a free, unconstrained witness column — its
++/// only appearance in `eval` is the `memory_bus.send(.., vec![local.initial_data], ZERO)`).
++/// The honest trace generator hardcodes `row.initial_data = 0` as a *convention*, not a
++/// constraint. This map lets a TEST play the malicious prover: for a touched address
++/// `(addr_space, pointer)` present here, the trace generator emits the mapped nonzero
++/// `initial_data` instead of 0, rebalancing the LogUp memory bus against an executor that
++/// was made (via `VmExe::init_memory`) to read that same nonzero "uninitialized" value.
++///
++/// This does **not** touch the AIR / `eval` / verifier / verifying key — only witness
++/// generation, exactly like a prover controlling its own trace generator. Compiled ONLY
++/// under `cfg(test)`; entirely absent (a genuine no-op) in production builds. A global
++/// (not thread-local) is required because the trace rows are filled on rayon worker threads.
++#[cfg(test)]
++pub(crate) static VOLATILE_INITIAL_DATA_FORGE: std::sync::RwLock<
++    Option<std::collections::HashMap<(u32, u32), u32>>,
++> = std::sync::RwLock::new(None);
++
++/// TEST-ONLY: install (or clear with `None`) the boundary `initial_data` forge map.
++#[cfg(test)]
++pub(crate) fn set_volatile_initial_data_forge(
++    map: Option<std::collections::HashMap<(u32, u32), u32>>,
++) {
++    *VOLATILE_INITIAL_DATA_FORGE.write().unwrap() = map;
++}
++
+ /// Address stored as address space, pointer
+ const ADDR_ELTS: usize = 2;
+ const NUM_AS_LIMBS: usize = 1;
+@@ -271,6 +299,17 @@ where
+                 );
+                 range_checker.decompose(*ptr, self.pointer_max_bits, &mut row.pointer_limbs);
+                 row.initial_data = Val::<SC>::ZERO;
++                // ===== TEST-ONLY malicious-prover forge seam (see VOLATILE_INITIAL_DATA_FORGE) =====
++                // Not compiled in production (`cfg(test)`); a genuine no-op there. When a test has
++                // installed a forge map, the boundary emits a prover-chosen nonzero `initial_data`
++                // on the memory bus at ts=0 instead of the honest 0. This does NOT modify the AIR /
++                // `eval` / verifier / vk — only witness generation.
++                #[cfg(test)]
++                if let Some(map) = VOLATILE_INITIAL_DATA_FORGE.read().unwrap().as_ref() {
++                    if let Some(&forged) = map.get(&(*addr_space, *ptr)) {
++                        row.initial_data = Val::<SC>::from_u32(forged);
++                    }
++                }
+                 row.final_data = data;
+                 row.final_timestamp = Val::<SC>::from_u32(timestamped_values.timestamp);
+                 row.is_valid = Val::<SC>::ONE;
+diff --git a/crates/vm/src/system/memory/volatile/tests.rs b/crates/vm/src/system/memory/volatile/tests.rs
+index 6ecf8264a..b66c7c003 100644
+--- a/crates/vm/src/system/memory/volatile/tests.rs
++++ b/crates/vm/src/system/memory/volatile/tests.rs
+@@ -146,3 +146,456 @@ fn boundary_air_test() {
+     )
+     .expect("Verification failed");
+ }
++
++/// AUDIT POC: VolatileBoundaryAir does NOT constrain `initial_data == 0`.
++/// A malicious prover can declare the initial (uninitialized) value of a
++/// volatile cell to be an arbitrary nonzero value. The spec
++/// (controller/mod.rs:71) is that uninitialized volatile memory is zero.
++/// Here we hand-build a boundary trace with `initial_data = 5` for a single
++/// touched address and a matching dummy that "reads" that forged initial value
++/// off the memory bus. If verification succeeds, the boundary AIR placed no
++/// constraint pinning initial_data to zero.
++#[test]
++fn poc_forge_nonzero_initial_data() {
++    use crate::system::memory::volatile::VolatileBoundaryCols;
++    use openvm_circuit_primitives::TraceSubRowGenerator;
++    use openvm_stark_backend::p3_air::BaseAir;
++    use std::borrow::BorrowMut;
++
++    const MEMORY_BUS: BusIndex = 1;
++    const RANGE_CHECKER_BUS: BusIndex = 3;
++    const LIMB_BITS: usize = 15;
++    const DECOMP: usize = 8;
++    let memory_bus = MemoryBus::new(MEMORY_BUS);
++
++    let range_bus = VariableRangeCheckerBus::new(RANGE_CHECKER_BUS, DECOMP);
++    let range_checker = Arc::new(VariableRangeCheckerChip::new(range_bus));
++
++    // addr_space_max_bits=2, pointer_max_bits=LIMB_BITS
++    let boundary_chip =
++        VolatileBoundaryChip::<Val>::new(memory_bus, 2, LIMB_BITS, range_checker.clone());
++    let boundary_air = Arc::new(boundary_chip.air.clone()) as AirRef<_>;
++    let width = BaseAir::<Val>::width(&boundary_chip.air);
++
++    // One touched address: (addr_space=1, pointer=7).
++    let addr_space: u32 = 1;
++    let pointer: u32 = 7;
++    let forged_initial: u32 = 5; // <-- forged nonzero "uninitialized" value
++    let final_data: u32 = 5;
++    let final_ts: u32 = 100;
++
++    // Build a 2-row boundary trace (1 valid + 1 padding).
++    let mut rows = vec![Val::ZERO; 2 * width];
++    {
++        let row: &mut VolatileBoundaryCols<Val> = rows[..width].borrow_mut();
++        // addr_space_max_bits=2 -> single limb of 2 bits
++        range_checker.decompose(addr_space, 2, &mut row.addr_space_limbs);
++        range_checker.decompose(pointer, LIMB_BITS, &mut row.pointer_limbs);
++        row.initial_data = Val::from_u32(forged_initial);
++        row.final_data = Val::from_u32(final_data);
++        row.final_timestamp = Val::from_u32(final_ts);
++        row.is_valid = Val::ONE;
++    }
++    // Dummy range check on last row due to wraparound (next.is_valid==0 so no lt constraint).
++    {
++        let mut out = Val::ZERO;
++        let row: &mut VolatileBoundaryCols<Val> = rows[width..].borrow_mut();
++        boundary_chip.air.addr_lt_air.0.generate_subrow(
++            (
++                range_checker.as_ref(),
++                &[Val::ZERO, Val::ZERO],
++                &[Val::ZERO, Val::ZERO],
++            ),
++            ((&mut row.addr_lt_aux).into(), &mut out),
++        );
++    }
++    let boundary_trace = Arc::new(RowMajorMatrix::new(rows, width));
++
++    // Dummy that RECEIVES the forged initial value off the bus (simulates a CPU
++    // "read" of the uninitialized cell returning 5), then SENDS final back.
++    // init dummy: count=is_valid, fields [addr_space, pointer, data, timestamp]
++    let init_memory_dummy_air = DummyInteractionAir::new(4, false, MEMORY_BUS);
++    let final_memory_dummy_air = DummyInteractionAir::new(4, true, MEMORY_BUS);
++
++    let init_memory_trace = Arc::new(RowMajorMatrix::new(
++        vec![
++            Val::ONE,
++            Val::from_u32(addr_space),
++            Val::from_u32(pointer),
++            Val::from_u32(forged_initial), // receive 5 at ts 0
++            Val::ZERO,
++            // padding row
++            Val::ZERO,
++            Val::ZERO,
++            Val::ZERO,
++            Val::ZERO,
++            Val::ZERO,
++        ],
++        5,
++    ));
++    let final_memory_trace = Arc::new(RowMajorMatrix::new(
++        vec![
++            Val::ONE,
++            Val::from_u32(addr_space),
++            Val::from_u32(pointer),
++            Val::from_u32(final_data),
++            Val::from_u32(final_ts),
++            Val::ZERO,
++            Val::ZERO,
++            Val::ZERO,
++            Val::ZERO,
++            Val::ZERO,
++        ],
++        5,
++    ));
++
++    BabyBearPoseidon2Engine::run_test_fast(
++        vec![
++            boundary_air,
++            Arc::new(range_checker.air),
++            Arc::new(init_memory_dummy_air),
++            Arc::new(final_memory_dummy_air),
++        ],
++        vec![
++            AirProvingContext::simple_no_pis(boundary_trace),
++            range_checker.generate_proving_ctx(()),
++            AirProvingContext::simple_no_pis(init_memory_trace),
++            AirProvingContext::simple_no_pis(final_memory_trace),
++        ],
++    )
++    .expect("FORGERY ACCEPTED: boundary AIR did not pin initial_data=0");
++}
++
++/// NEGATIVE CONTROL for poc_forge_nonzero_initial_data.
++///
++/// Same setup, but here the boundary AIR sends initial_data = 0 (honest), while
++/// the CPU-read dummy still receives 5 off the bus. This MUST fail: the memory
++/// bus is a logup permutation argument, so a receive of value 5 with no matching
++/// send of 5 unbalances the bus and the verifier rejects. This proves:
++///   (a) the bus value binding genuinely works (forging prev_data requires a
++///       matching send), and
++///   (b) the ONLY reason poc_forge_nonzero_initial_data passes is the missing
++///       initial_data == 0 constraint in VolatileBoundaryAir::eval. If the AIR
++///       constrained initial_data == 0, the forgery test would look exactly like
++///       this control and would also fail.
++#[test]
++fn neg_control_mismatched_initial_data_rejected() {
++    use crate::system::memory::volatile::VolatileBoundaryCols;
++    use openvm_circuit_primitives::TraceSubRowGenerator;
++    use openvm_stark_backend::p3_air::BaseAir;
++    use std::borrow::BorrowMut;
++
++    const MEMORY_BUS: BusIndex = 1;
++    const RANGE_CHECKER_BUS: BusIndex = 3;
++    const LIMB_BITS: usize = 15;
++    const DECOMP: usize = 8;
++    let memory_bus = MemoryBus::new(MEMORY_BUS);
++
++    let range_bus = VariableRangeCheckerBus::new(RANGE_CHECKER_BUS, DECOMP);
++    let range_checker = Arc::new(VariableRangeCheckerChip::new(range_bus));
++
++    let boundary_chip =
++        VolatileBoundaryChip::<Val>::new(memory_bus, 2, LIMB_BITS, range_checker.clone());
++    let boundary_air = Arc::new(boundary_chip.air.clone()) as AirRef<_>;
++    let width = BaseAir::<Val>::width(&boundary_chip.air);
++
++    let addr_space: u32 = 1;
++    let pointer: u32 = 7;
++    let honest_initial: u32 = 0; // honest: boundary sends 0
++    let read_value: u32 = 5; // but the CPU read claims it got 5
++    let final_data: u32 = 5;
++    let final_ts: u32 = 100;
++
++    let mut rows = vec![Val::ZERO; 2 * width];
++    {
++        let row: &mut VolatileBoundaryCols<Val> = rows[..width].borrow_mut();
++        range_checker.decompose(addr_space, 2, &mut row.addr_space_limbs);
++        range_checker.decompose(pointer, LIMB_BITS, &mut row.pointer_limbs);
++        row.initial_data = Val::from_u32(honest_initial);
++        row.final_data = Val::from_u32(final_data);
++        row.final_timestamp = Val::from_u32(final_ts);
++        row.is_valid = Val::ONE;
++    }
++    {
++        let mut out = Val::ZERO;
++        let row: &mut VolatileBoundaryCols<Val> = rows[width..].borrow_mut();
++        boundary_chip.air.addr_lt_air.0.generate_subrow(
++            (
++                range_checker.as_ref(),
++                &[Val::ZERO, Val::ZERO],
++                &[Val::ZERO, Val::ZERO],
++            ),
++            ((&mut row.addr_lt_aux).into(), &mut out),
++        );
++    }
++    let boundary_trace = Arc::new(RowMajorMatrix::new(rows, width));
++
++    let init_memory_dummy_air = DummyInteractionAir::new(4, false, MEMORY_BUS);
++    let final_memory_dummy_air = DummyInteractionAir::new(4, true, MEMORY_BUS);
++
++    // CPU read dummy receives 5 -- but boundary only sent 0 -> bus imbalance.
++    let init_memory_trace = Arc::new(RowMajorMatrix::new(
++        vec![
++            Val::ONE,
++            Val::from_u32(addr_space),
++            Val::from_u32(pointer),
++            Val::from_u32(read_value), // receive 5, no matching send of 5 at ts 0
++            Val::ZERO,
++            Val::ZERO,
++            Val::ZERO,
++            Val::ZERO,
++            Val::ZERO,
++            Val::ZERO,
++        ],
++        5,
++    ));
++    let final_memory_trace = Arc::new(RowMajorMatrix::new(
++        vec![
++            Val::ONE,
++            Val::from_u32(addr_space),
++            Val::from_u32(pointer),
++            Val::from_u32(final_data),
++            Val::from_u32(final_ts),
++            Val::ZERO,
++            Val::ZERO,
++            Val::ZERO,
++            Val::ZERO,
++            Val::ZERO,
++        ],
++        5,
++    ));
++
++    // run_test_fast panics (LogUp multiset equality check) on bus imbalance
++    // rather than returning Err, so catch the unwind.
++    let prev_hook = std::panic::take_hook();
++    std::panic::set_hook(Box::new(|_| {}));
++    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++        BabyBearPoseidon2Engine::run_test_fast(
++            vec![
++                boundary_air,
++                Arc::new(range_checker.air),
++                Arc::new(init_memory_dummy_air),
++                Arc::new(final_memory_dummy_air),
++            ],
++            vec![
++                AirProvingContext::simple_no_pis(boundary_trace),
++                range_checker.generate_proving_ctx(()),
++                AirProvingContext::simple_no_pis(init_memory_trace),
++                AirProvingContext::simple_no_pis(final_memory_trace),
++            ],
++        )
++    }));
++    std::panic::set_hook(prev_hook);
++    let rejected = match outcome {
++        Err(_) => true,                              // panicked (LogUp imbalance) = rejected
++        Ok(verify_result) => verify_result.is_err(), // or returned Err = rejected
++    };
++    assert!(
++        rejected,
++        "NEG CONTROL FAILED: bus accepted a receive of 5 with no matching send of 5"
++    );
++}
++
++// ===========================================================================================
++//  GOLD STANDARD: real full-VM keygen + prove + verify where the REAL verifier ACCEPTS a
++//  proof whose COMMITTED public value equals a prover-chosen nonzero value that a volatile
++//  memory cell was NEVER written with (spec: uninitialized volatile memory reads as 0).
++// ===========================================================================================
++//
++// This closes the gap left by `poc_forge_nonzero_initial_data` (which observed the forged
++// value via a `DummyInteractionAir`, not a verifier-checked committed output). Here the value
++// flows all the way to a verifier-checked public value.
++//
++// The exploited constraint gap is unchanged: `VolatileBoundaryAir::eval` sends `initial_data`
++// on the memory bus at ts=0 with NO `== 0` assertion; `initial_data` is a free, unconstrained
++// witness column. The honest trace generator merely *conventionally* fills it with 0
++// (`volatile/mod.rs:273`).
++//
++// The forgery is a COORDINATED malicious-prover forge of two prover-controlled artifacts,
++// with NO change to any AIR / `eval` / verifier / verifying key:
++//   (a) executor side: `VmExe::init_memory` seeds the volatile cell (NATIVE_AS, P)'s initial
++//       tracing image with the forged value V. For a volatile config this image feeds the
++//       tracing memory (so a read-before-write returns V) but NOT the boundary `initial_data`
++//       (volatile `set_initial_memory` is a no-op) — that asymmetry is the bug.
++//   (b) trace-gen side: `VOLATILE_INITIAL_DATA_FORGE` makes the boundary trace generator send
++//       the MATCHING V (instead of 0) on the memory bus at ts=0, rebalancing the LogUp bus.
++//
++// The tiny guest program does `PUBLISH value = mem[(NATIVE_AS, P)], index = 0`. The
++// `PublicValuesCoreAir` constrains `value == builder.public_values()[index]`, and the memory
++// bus binds `value` to the actual cell content. So the verifier-checked public value at slot 0
++// is provably tied to the (forged) uninitialized read. `verify_single` = `engine.verify(vk, ..)`.
++
++/// Serializes forge-using test runs (the forge map is a process-global static).
++#[cfg(test)]
++static FORGE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
++
++/// Runs one full-VM single-segment keygen+prove+verify of the `PUBLISH mem[(4,P)] @ index 0`
++/// program. `init_val`, if Some(v), seeds cell (4, P) via `exe.init_memory` (executor forge);
++/// `forge_boundary`, if true, installs the coordinated boundary `initial_data` forge for (4, P).
++/// The verifying key is always taken from the HONEST keygen, computed BEFORE the boundary forge
++/// is installed. Returns `(verify_is_ok, committed_public_value_at_slot_0_as_u32)`.
++#[cfg(test)]
++fn run_publish_volatile_cell(init_val: Option<u32>, forge_boundary: bool) -> (bool, u32) {
++    use std::{collections::BTreeMap, sync::Arc};
++
++    use openvm_instructions::{
++        exe::VmExe, instruction::Instruction, program::Program, LocalOpcode,
++        PublishOpcode::PUBLISH, SystemOpcode::TERMINATE,
++    };
++    use openvm_stark_backend::p3_field::PrimeField32;
++    use openvm_stark_sdk::{config::FriParameters, engine::StarkFriEngine};
++
++    use crate::{
++        arch::{
++            verify_single, SingleSegmentVmProver, VirtualMachine, VmInstance, PUBLIC_VALUES_AIR_ID,
++        },
++        system::{memory::volatile::set_volatile_initial_data_forge, SystemCpuBuilder},
++        utils::{test_system_config_without_continuations, TestStarkEngine},
++    };
++
++    // Native cell that the program reads. Bytes live at (NATIVE_AS, P*4 .. P*4+4).
++    // A distinctive pointer so no concurrently-running test's touched memory collides with the
++    // (global) boundary forge map for this cell.
++    const NATIVE_AS: u32 = 4;
++    const P: u32 = 1_234_567;
++
++    // The boundary forge map is a process-global (`#[cfg(test)]`) static, and cargo runs tests in
++    // parallel; serialize all forge-using runs so they can't clobber each other's forge state.
++    // The drop-guard clears the forge (before releasing the lock) even if `prove` panics.
++    let _lock = FORGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
++    struct ClearForgeOnDrop;
++    impl Drop for ClearForgeOnDrop {
++        fn drop(&mut self) {
++            crate::system::memory::volatile::set_volatile_initial_data_forge(None);
++        }
++    }
++    let _clear = ClearForgeOnDrop;
++
++    // Honest single-segment volatile config with a PublicValuesChip.
++    let config = test_system_config_without_continuations();
++    assert!(!config.continuation_enabled, "must be volatile");
++    assert!(
++        config.has_public_values_chip(),
++        "must have PublicValuesChip"
++    );
++
++    // Program: publish mem[(NATIVE_AS, P)] at public-value index 0, then terminate.
++    //   operands = [a, b, c, d, e, f]; value read #0 = (b=P, e=NATIVE_AS); index read #1 = (c=0,
++    //   f=0=RV32_IMM_AS => immediate 0). No store anywhere: cell (4, P) is never written.
++    let program = Program::from_instructions(&[
++        Instruction::<Val>::from_usize(
++            PUBLISH.global_opcode(),
++            [0, P as usize, 0, 0, NATIVE_AS as usize, 0],
++        ),
++        Instruction::<Val>::from_isize(TERMINATE.global_opcode(), 0, 0, 0, 0, 0),
++    ]);
++
++    // (a) Executor forge: seed the cell's initial tracing image with the field value V.
++    //     `init_memory` stores the raw (Montgomery) bytes; a native read reconstructs V.
++    let mut init_memory = BTreeMap::new();
++    if let Some(v) = init_val {
++        let raw: [u8; 4] = unsafe { std::mem::transmute::<Val, [u8; 4]>(Val::from_u32(v)) };
++        for (i, b) in raw.into_iter().enumerate() {
++            init_memory.insert((NATIVE_AS, P * 4 + i as u32), b);
++        }
++    }
++    let exe = VmExe {
++        program,
++        pc_start: 0,
++        init_memory,
++        fn_bounds: Default::default(),
++    };
++
++    // Honest keygen -> vk (computed BEFORE any forge is installed; AIRs are untouched).
++    let engine = TestStarkEngine::new(FriParameters::new_for_testing(2));
++    let (vm, pk) =
++        VirtualMachine::new_with_keygen(engine, SystemCpuBuilder, config).expect("keygen failed");
++    let vk = pk.get_vk();
++    let num_airs = pk.per_air.len();
++
++    let cached_program_trace = vm.commit_program_on_device(&exe.program);
++    let mut prover = VmInstance::new(vm, Arc::new(exe), cached_program_trace).expect("instance");
++
++    // (b) Boundary trace-gen forge (malicious prover's own witness generator), installed AFTER
++    //     the honest keygen. Does not affect the vk.
++    if forge_boundary {
++        let mut m = std::collections::HashMap::new();
++        m.insert((NATIVE_AS, P), init_val.expect("forge needs a value"));
++        set_volatile_initial_data_forge(Some(m));
++    } else {
++        set_volatile_initial_data_forge(None);
++    }
++
++    let proof = SingleSegmentVmProver::prove(&mut prover, vec![], &vec![256; num_airs])
++        .expect("prove failed");
++
++    // Clear the forge immediately so no other test observes it.
++    set_volatile_initial_data_forge(None);
++
++    let pv_air = proof
++        .per_air
++        .iter()
++        .find(|a| a.air_id == PUBLIC_VALUES_AIR_ID)
++        .expect("public values AIR present");
++    let committed = pv_air.public_values[0].as_canonical_u32();
++
++    let verify_ok = verify_single(&prover.vm.engine, &vk, &proof).is_ok();
++    (verify_ok, committed)
++}
++
++/// GOLD STANDARD: the real verifier ACCEPTS a proof whose committed public value is a
++/// prover-chosen nonzero value that the volatile cell was never written with.
++#[test]
++#[allow(non_snake_case)]
++fn volatile_initial_data_GOLD() {
++    const FORGED: u32 = 19088743; // 0x1234567, < BabyBear prime; never written by the program.
++
++    // 1) HONEST BASELINE: no executor seed, no boundary forge. The uninitialized volatile cell
++    //    reads as 0 -> committed public value is 0. Verifier accepts.
++    let (ok, committed) = run_publish_volatile_cell(None, false);
++    assert!(ok, "honest baseline must verify");
++    assert_eq!(
++        committed, 0,
++        "honest read of uninitialized volatile cell is 0"
++    );
++
++    // 2) GOLD: coordinated forge. Executor's initial volatile image = FORGED (read returns it),
++    //    boundary trace-gen sends the MATCHING FORGED on the memory bus. vk is from honest keygen.
++    //    The real verifier ACCEPTS, and the COMMITTED public value is the forged nonzero value.
++    let (ok, committed) = run_publish_volatile_cell(Some(FORGED), true);
++    assert!(
++        ok,
++        "GOLD: real verifier must ACCEPT the coordinated-forge proof"
++    );
++    assert_eq!(
++        committed, FORGED,
++        "GOLD: committed public value must equal the forged never-written value"
++    );
++    assert_ne!(committed, 0, "GOLD: committed output is a nonzero forgery");
++}
++
++/// NEGATIVE CONTROL for `volatile_initial_data_GOLD`: the executor-side forge ALONE (nonzero
++/// initial volatile image) WITHOUT the coordinated boundary trace-gen forge must be REJECTED.
++/// The honest boundary still sends `initial_data = 0` while the CPU read receives the forged
++/// value at ts=0 -> the LogUp memory bus is unbalanced -> the verifier rejects. This proves
++/// (a) the memory bus genuinely binds the read value, and (b) the boundary trace-gen forge is
++/// the essential second half of the forgery.
++#[test]
++fn volatile_initial_data_gold_neg_executor_only() {
++    const FORGED: u32 = 19088743;
++
++    // `run_publish_volatile_cell` clears the forge via an internal drop-guard even on panic.
++    let prev_hook = std::panic::take_hook();
++    std::panic::set_hook(Box::new(|_| {}));
++    let outcome = std::panic::catch_unwind(|| run_publish_volatile_cell(Some(FORGED), false));
++    std::panic::set_hook(prev_hook);
++
++    let rejected = match outcome {
++        Err(_) => true,                   // panicked during prove/verify = rejected
++        Ok((verify_ok, _)) => !verify_ok, // returned but verify failed = rejected
++    };
++    assert!(
++        rejected,
++        "NEG CONTROL FAILED: executor-only forge (no boundary forge) must be rejected by the bus"
++    );
++}

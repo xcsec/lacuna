@@ -1,0 +1,9 @@
+[package]
+name = "lacuna_seeds"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pico-sdk = { path = "../../pico/sdk/sdk", default-features = false, features = ["bb"] }
+
+[workspace]

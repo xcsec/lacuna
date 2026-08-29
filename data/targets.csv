@@ -1,0 +1,8 @@
+target,repository,revision,release,also_evaluated_revision,also_evaluated_release,guest_isa,guest_word_width,proof_framework,proof_field,field_modulus
+pico,https://github.com/brevis-network/pico,22b0aae6321c1f63c72aafd0b506b5f45b91ffb1,v2.0.0,,,RV64IM,64,Plonky3 STARK (AIR + LogUp),KoalaBear,2130706433
+ceno,https://github.com/scroll-tech/ceno,13c5abf36a7f9aa02d9ea5f2eb5a0719ebf17f8b,"(master, no tag)",,,RV32IM,32,GKR / sumcheck over committed WitIns,BabyBear,2013265921
+nexus,https://github.com/nexus-xyz/nexus-zkvm,f2ad12652c39dc516a116447a53f8557f64a7f7d,v0.3.6,,,RV32IM,32,Stwo AIR + LogUp,Mersenne-31,2147483647
+zisk,https://github.com/0xPolygonHermez/zisk,6182c8be9f4ec6baf7ee9771dd0668324f7112ed,"(main, no tag)",,,RV64IMA,64,PIL2 / proofman,Goldilocks,18446744069414584321
+openvm,https://github.com/openvm-org/openvm,8f021b1f231469fc95de0c16b5193a004c5f21ea,v2.0.1,425913bdc743ef44236daf472ec53c2c05b75fa1,v1.7.0,RV32IM,32,"Plonky3 STARK (AIR, adapter/core split)",BabyBear,2013265921
+risc0,https://github.com/risc0/risc0,10fa97888d16cebf1b924c2079d9d18b939da6d3,(main),,,RV32IM,32,zirgen generative circuit,BabyBear,2013265921
+sp1,https://github.com/succinctlabs/sp1,51f6efcb2971540d2ce1f48b35fd8bcf848a8b9f,(zkvm-fuzz-work branch),,,RV32IM/RV64,32,Plonky3 STARK / hypercube,BabyBear,2013265921

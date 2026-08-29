@@ -1,0 +1,159 @@
+diff --git a/prover2/machine/src/lib.rs b/prover2/machine/src/lib.rs
+old mode 100644
+new mode 100755
+index eabd725..7b2338e
+--- a/prover2/machine/src/lib.rs
++++ b/prover2/machine/src/lib.rs
+@@ -66,3 +66,6 @@ const BASE_COMPONENTS: &[&dyn framework::MachineComponent] = &[
+ 
+ pub use prove::{prove, Proof};
+ pub use verify::verify;
++
++#[cfg(test)]
++mod lacuna_eval;
+diff --git a/vm/src/trace.rs b/vm/src/trace.rs
+old mode 100644
+new mode 100755
+index ebca14c..f69579c
+--- a/vm/src/trace.rs
++++ b/vm/src/trace.rs
+@@ -179,6 +179,117 @@ impl BBTrace {
+     }
+ }
+ 
++
++/// LACUNA — generic record-layer write-back perturbation (TEST-ONLY, default OFF).
++///
++/// This is the nexus analogue of the single architectural write-back choke point.
++/// Every `Step` in every trace is built by `step()` below from the value
++/// `execute_instruction` returned; arming this module rewrites that value at one
++/// static pc and ALSO writes it into the emulator's register file, so the honest
++/// emulator continues from the perturbed value and every later register snapshot,
++/// dependent store and memory record follows naturally.
++///
++/// It contains no opcode, operand, chip or column knowledge: the arming key is
++/// `(static pc, n-th execution of that pc)` and the rewriting menu is
++/// instruction-independent.
++pub mod wb_perturb {
++    use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
++    const R: Ordering = Ordering::Relaxed;
++
++    /// v ^ (1 << i)
++    pub const MU_XORBIT: usize = 0;
++    /// v + k  (wrapping); k = +/- B^i expresses the scalar-result template
++    pub const MU_ADDK: usize = 1;
++    /// v <- 0
++    pub const MU_ZERO: usize = 2;
++    /// v <- literal (boundary values)
++    pub const MU_SET: usize = 3;
++
++    static ENABLED: AtomicBool = AtomicBool::new(false);
++    static TARGET_PC: AtomicU32 = AtomicU32::new(u32::MAX);
++    static TARGET_NTH: AtomicI64 = AtomicI64::new(-1);
++    static SEEN: AtomicI64 = AtomicI64::new(0);
++    static MU_KIND: AtomicUsize = AtomicUsize::new(MU_XORBIT);
++    static MU_ARG: AtomicI64 = AtomicI64::new(0);
++    static HITS: AtomicUsize = AtomicUsize::new(0);
++    static HONEST: AtomicU64 = AtomicU64::new(0);
++    static FORGED: AtomicU64 = AtomicU64::new(0);
++
++    /// Number of write-backs actually perturbed (0 => the site never executed).
++    pub fn hits() -> usize {
++        HITS.load(R)
++    }
++    pub fn honest_value() -> u32 {
++        HONEST.load(R) as u32
++    }
++    pub fn forged_value() -> u32 {
++        FORGED.load(R) as u32
++    }
++
++    /// Run `body` with the write-back at `pc` perturbed by `mu`. Cleared on return
++    /// or panic.
++    pub fn with<Res>(
++        pc: u32,
++        nth: i64,
++        mu_kind: usize,
++        mu_arg: i64,
++        body: impl FnOnce() -> Res,
++    ) -> Res {
++        TARGET_PC.store(pc, R);
++        TARGET_NTH.store(nth, R);
++        SEEN.store(0, R);
++        MU_KIND.store(mu_kind, R);
++        MU_ARG.store(mu_arg, R);
++        HITS.store(0, R);
++        HONEST.store(0, R);
++        FORGED.store(0, R);
++        ENABLED.store(true, R);
++        struct Clear;
++        impl Drop for Clear {
++            fn drop(&mut self) {
++                ENABLED.store(false, R);
++                TARGET_PC.store(u32::MAX, R);
++            }
++        }
++        let _c = Clear;
++        body()
++    }
++
++    #[inline]
++    fn mutate(v: u32) -> u32 {
++        let arg = MU_ARG.load(R);
++        match MU_KIND.load(R) {
++            MU_XORBIT => v ^ (1u32 << ((arg as u32) & 31)),
++            MU_ADDK => v.wrapping_add(arg as u32),
++            MU_ZERO => 0,
++            MU_SET => arg as u32,
++            _ => v,
++        }
++    }
++
++    /// THE choke point: called once per executed instruction with the value the
++    /// instruction wrote back. Returns the value to record.
++    #[inline]
++    pub fn on_write_back(pc: u32, v: u32) -> u32 {
++        if !ENABLED.load(R) || pc != TARGET_PC.load(R) {
++            return v;
++        }
++        let n = SEEN.fetch_add(1, R);
++        let want = TARGET_NTH.load(R);
++        if want >= 0 && n != want {
++            return v;
++        }
++        let f = mutate(v);
++        if f == v {
++            return v;
++        }
++        HONEST.store(v as u64, R);
++        FORGED.store(f as u64, R);
++        HITS.fetch_add(1, R);
++        f
++    }
++}
++
+ // Generate a `Step` by evaluating the next instruction of `vm`.
+ fn step(
+     vm: &mut impl Emulator,
+@@ -189,6 +300,21 @@ fn step(
+ ) -> Result<Step> {
+     let (result, memory_records) = vm.execute_instruction(instruction, force_second_pass)?;
+ 
++    // LACUNA record-layer write-back hook (no-op unless armed; see `wb_perturb`).
++    // The perturbed value is ALSO written into the emulator's register file so the
++    // honest emulator continues from it and every later snapshot/store follows.
++    let result = match result {
++        Some(v) => {
++            let f = wb_perturb::on_write_back(pc, v);
++            if f != v && instruction.op_a != crate::riscv::Register::X0 {
++                use nexus_common::cpu::Registers;
++                vm.get_executor_mut().cpu.registers.write(instruction.op_a, f);
++            }
++            Some(f)
++        }
++        None => None,
++    };
++
+     let next_pc = vm.get_executor().cpu.pc.value;
+ 
+     let step = Step {
